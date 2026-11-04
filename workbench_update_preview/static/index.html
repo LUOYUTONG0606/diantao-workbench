@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b1411">
+<link rel="icon" type="image/svg+xml" href="/static/tearice-logo.svg">
+<title>Tearice · 自动化大管家</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1411;--bar:#111c18;--raised:#18261f;--line:#294238;--text:#f4f1ea;--muted:#a7b8af;--green:#88b8a0;--gold:#d6b76f;--danger:#e99c8d;--focus:#f2d58a;--shadow:0 18px 55px rgba(0,0,0,.34);font-family:"Microsoft YaHei UI","Segoe UI",sans-serif}
+:root[data-theme=paper]{color-scheme:light;--bg:#f4f1ea;--bar:#fffdf7;--raised:#e9eee8;--line:#cbd7cf;--text:#17231e;--muted:#607168;--green:#3f6857;--gold:#8a6420;--danger:#9b4032;--focus:#315e4c;--shadow:0 18px 50px rgba(41,62,52,.18)}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text)}button{font:inherit;color:inherit}button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.shell{height:100%;display:grid;grid-template-rows:auto auto minmax(0,1fr)}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 18px;background:var(--bar);border-bottom:1px solid var(--line)}
+.brand,.top-actions{display:flex;align-items:center;gap:10px}.brand img{width:34px;height:34px}.brand strong{font:600 20px Georgia,"Songti SC",serif}.brand small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.preview-tag,.version-chip,.status-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:var(--raised);font-size:11px}.preview-tag{color:var(--gold)}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--danger)}.status-chip.online .status-dot{background:var(--green);box-shadow:0 0 0 3px color-mix(in srgb,var(--green) 20%,transparent)}.top-actions button{border:1px solid var(--line);border-radius:7px;padding:7px 10px;background:var(--raised);cursor:pointer}.top-actions button:hover{border-color:var(--green)}
+.update-banner{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid color-mix(in srgb,var(--gold) 45%,var(--line));background:color-mix(in srgb,var(--gold) 8%,var(--bar))}.update-dot{width:8px;height:8px;border-radius:50%;background:var(--gold);box-shadow:0 0 0 4px color-mix(in srgb,var(--gold) 15%,transparent)}.update-copy strong{display:block;font-size:13px}.update-copy span{display:block;color:var(--muted);font-size:11px;margin-top:2px}.update-banner button,.primary,.ghost,.danger{border:1px solid var(--line);border-radius:7px;padding:8px 12px;background:var(--raised);cursor:pointer}.primary{background:var(--green);border-color:var(--green);color:#0b1711;font-weight:700}.danger{color:var(--danger)}
+.app-stage{position:relative;min-height:0;background:var(--bg)}.app-frame{display:block;width:100%;height:100%;border:0;background:var(--bg)}.frame-loading,.frame-error{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:30px;background:var(--bg);z-index:2}.frame-loading[hidden],.frame-error[hidden]{display:none}.frame-message{max-width:480px}.frame-message img{width:58px;height:58px}.frame-message h1{font:600 25px Georgia,"Songti SC",serif;margin:14px 0 8px}.frame-message p{color:var(--muted);line-height:1.7;margin:0 0 18px}.frame-message button{border:1px solid var(--green);background:var(--green);color:#0b1711;border-radius:7px;padding:9px 15px;cursor:pointer;font-weight:700}
+.backdrop{position:fixed;inset:0;background:rgba(3,8,6,.75);display:grid;place-items:center;padding:20px;z-index:20}.backdrop[hidden]{display:none}.dialog{width:min(620px,100%);max-height:calc(100vh - 40px);overflow:auto;background:var(--bar);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.dialog-head{display:flex;justify-content:space-between;gap:16px;padding:22px 24px 16px}.dialog-head h2{font:600 26px Georgia,"Songti SC",serif;margin:0}.dialog-head p{color:var(--muted);margin:7px 0 0;font-size:12px}.close{border:0;background:transparent;width:38px;height:38px;border-radius:7px;font-size:24px;cursor:pointer}.dialog-body{padding:0 24px 24px}.version-route{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;background:var(--raised);border:1px solid var(--line);border-radius:9px;padding:16px}.version-route div:last-child{text-align:right}.version-route span{display:block;color:var(--muted);font-size:11px;margin-bottom:4px}.route{color:var(--gold);font-size:20px}.notes{padding:0;margin:20px 0 20px 20px;color:var(--muted);line-height:1.7;font-size:13px}.security{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:18px 0}.security div{border:1px solid var(--line);border-radius:8px;padding:11px;text-align:center;font-size:11px}.security b{display:block;color:var(--green);margin-bottom:3px}.progress-box{background:var(--raised);border-radius:9px;padding:16px;margin:18px 0}.progress-head{display:flex;justify-content:space-between;gap:12px;font-size:12px;margin-bottom:11px}.progress-track{height:8px;background:var(--bg);border-radius:9px;overflow:hidden}.progress-bar{height:100%;width:0;background:var(--green);transition:width .25s ease}.progress-message{color:var(--muted);font-size:11px;margin:10px 0 0}.dialog-actions{display:flex;justify-content:flex-end;gap:9px;flex-wrap:wrap}.sr-live{position:fixed;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+@media(max-width:760px){.topbar{align-items:flex-start}.brand small,.version-chip{display:none}.top-actions{justify-content:flex-end}.update-banner{grid-template-columns:auto 1fr}.update-banner button{grid-column:2;justify-self:start}.security{grid-template-columns:1fr}.dialog-actions>*{flex:1}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="topbar">
+  <div class="brand"><img src="/static/tearice-logo.svg" alt=""><div><strong>Tearice</strong><small>自动化大管家 · v0.3.0</small></div></div>
+  <div class="top-actions"><span class="version-chip">当前 v0.3.0</span><span id="upstream-status" class="status-chip"><i class="status-dot"></i><span>正在连接真实管家</span></span><button id="theme-toggle" aria-label="切换配色">明暗</button></div>
+</header>
+<section class="update-banner" aria-label="版本更新提示"><i class="update-dot"></i><div class="update-copy"><strong id="banner-title">v0.3.1-demo simulation</strong><span id="banner-message">更新区域仅演示界面流程，不会下载、安装或替换文件。</span></div><button id="view-update">查看更新</button></section>
+<main class="app-stage">
+  <div id="frame-loading" class="frame-loading"><div class="frame-message"><img src="/static/tearice-logo.svg" alt=""><h1>正在载入真实管家</h1><p>看板正在连接由启动器管理的 9060 任务服务；任务、手机连接和日志仍由真实服务处理。</p></div></div>
+  <div id="frame-error" class="frame-error" hidden><div class="frame-message"><img src="/static/tearice-logo.svg" alt=""><h1>真实管家暂未连接</h1><p id="frame-error-text">任务服务尚未就绪，请稍后重试。</p><button id="retry-frame">重新连接</button></div></div>
+  <iframe id="real-workbench" class="app-frame" src="http://127.0.0.1:9060/" title="Tearice 真实自动化大管家"></iframe>
+</main>
+</div>
+<div class="backdrop" id="update-modal" hidden>
+<section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description">
+ <div class="dialog-head"><div><h2 id="dialog-title">版本与更新</h2><p id="dialog-description">这是明确标注的 simulation，不会下载、安装或替换文件。</p></div><button class="close" id="close-modal" aria-label="关闭更新弹窗">×</button></div>
+ <div class="dialog-body">
+  <div class="version-route"><div><span>当前版本</span><b id="current-version">v0.3.0</b></div><div class="route">›</div><div><span>目标版本</span><b id="latest-version">v0.3.1-demo</b></div></div>
+  <ul class="notes" id="release-notes"></ul>
+  <div class="security"><div><b>Simulation</b>不下载文件</div><div><b>Simulation</b>不执行安装</div><div><b>Demo target</b>非正式发布版</div></div>
+  <div class="progress-box" id="progress-box" hidden><div class="progress-head"><b id="phase">模拟检查</b><span id="progress-value">0%</span></div><div class="progress-track" role="progressbar" aria-label="simulation 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-bar" id="progress-bar"></div></div><p class="progress-message" id="progress-message"></p></div>
+  <div class="dialog-actions"><button class="danger" id="cancel-update" hidden>取消更新</button><button class="ghost" id="reset-update" hidden>重新预览</button><button class="primary" id="install-update">开始模拟更新</button></div>
+ </div>
+</section>
+</div>
+<div id="announcer" class="sr-live" aria-live="polite"></div>
+<script>
+const $=id=>document.getElementById(id);let state=null,pollTimer=null,lastFocus=null;
+function version(v){return String(v||'').startsWith('v')?String(v):'v'+v}
+async function request(url,options){const response=await fetch(url,options);const body=await response.json();if(!response.ok)throw new Error(body.detail||'请求失败');return body}
+function renderUpdate(next){state=next;$('banner-title').textContent=next.status==='installed'?'simulation 已完成':version(next.latest_version)+' 可用';$('banner-message').textContent=next.message;$('current-version').textContent=version(next.current_version);$('latest-version').textContent=version(next.latest_version);$('release-notes').replaceChildren(...next.release_notes.map(text=>{const li=document.createElement('li');li.textContent=text;return li}));const active=['installing','installed','cancelled'].includes(next.status);$('progress-box').hidden=!active;$('phase').textContent=next.phase;$('progress-value').textContent=next.progress+'%';$('progress-bar').style.width=next.progress+'%';$('progress-message').textContent=next.message;document.querySelector('[role=progressbar]').setAttribute('aria-valuenow',String(next.progress));$('install-update').hidden=!next.can_install;$('cancel-update').hidden=!next.can_cancel;$('reset-update').hidden=next.status!=='installed';if(next.status==='installing')startPolling();else stopPolling()}
+async function refreshUpdate(){renderUpdate(await request('/api/update/status'))}function startPolling(){if(!pollTimer)pollTimer=setInterval(()=>refreshUpdate().catch(()=>{}),250)}function stopPolling(){clearInterval(pollTimer);pollTimer=null}
+function openModal(){lastFocus=document.activeElement;$('update-modal').hidden=false;$('close-modal').focus()}function closeModal(){if(state&&state.status==='installing')return;$('update-modal').hidden=true;(lastFocus||$('view-update')).focus()}
+async function action(name){try{const result=await request('/api/update/'+name,{method:'POST'});renderUpdate(result.update);$('announcer').textContent=result.message}catch(error){$('announcer').textContent=error.message}}
+async function checkUpstream(){const status=await request('/api/upstream/status');const chip=$('upstream-status');chip.classList.toggle('online',status.ok);chip.querySelector('span').textContent=status.ok?'真实管家已连接':'真实管家未连接';if(!status.ok){$('frame-loading').hidden=true;$('frame-error').hidden=false;$('frame-error-text').textContent='任务服务尚未就绪，请稍后点击重新连接。'}return status.ok}
+function reloadFrame(){const frame=$('real-workbench');$('frame-error').hidden=true;$('frame-loading').hidden=false;frame.src='http://127.0.0.1:9060/?embedded='+Date.now();checkUpstream()}
+$('real-workbench').addEventListener('load',()=>{$('frame-loading').hidden=true;$('frame-error').hidden=true});$('real-workbench').addEventListener('error',()=>{$('frame-loading').hidden=true;$('frame-error').hidden=false});$('retry-frame').onclick=reloadFrame;
+$('view-update').onclick=openModal;$('close-modal').onclick=closeModal;$('install-update').onclick=()=>action('install');$('cancel-update').onclick=()=>action('cancel');$('reset-update').onclick=()=>action('reset');$('update-modal').addEventListener('click',event=>{if(event.target===$('update-modal'))closeModal()});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('update-modal').hidden)closeModal();if(event.key==='Tab'&&!$('update-modal').hidden){const items=[...$('update-modal').querySelectorAll('button:not([hidden])')];const first=items[0],last=items.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}});
+$('theme-toggle').onclick=()=>{const paper=document.documentElement.dataset.theme==='paper';document.documentElement.dataset.theme=paper?'ink':'paper';try{localStorage.setItem('dashboard.theme',paper?'ink':'paper')}catch(_){}};try{document.documentElement.dataset.theme=localStorage.getItem('dashboard.theme')||'ink'}catch(_){document.documentElement.dataset.theme='ink'}
+Promise.all([refreshUpdate(),checkUpstream()]).catch(error=>{$('announcer').textContent=error.message});setInterval(()=>checkUpstream().catch(()=>{}),8000);
+</script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+[
+  {
+    "name": "赚钱卡 (直播/浏览/猜价格)",
+    "file": "赚钱卡.py",
+    "timeout": 1200,
+    "checked": true
+  },
+  {
+    "name": "签到赢元宝",
+    "file": "签到赢元宝.py",
+    "timeout": 1800,
+    "checked": true
+  },
+  {
+    "name": "元宝中心小任务",
+    "file": "元宝中心小任务.py",
+    "timeout": 1500,
+    "checked": true
+  },
+  {
+    "name": "打工得体力",
+    "file": "打工得体力.py",
+    "timeout": 1500,
+    "checked": true
+  },
+  {
+    "name": "打工加速",
+    "file": "打工加速.py",
+    "timeout": 600,
+    "checked": true
+  },
+  {
+    "name": "点淘购物赚钱",
+    "file": "点淘购物赚钱.py",
+    "timeout": 1200,
+    "checked": true
+  },
+  {
+    "name": "点淘鸭钻石任务",
+    "file": "点淘鸭钻石任务.py",
+    "timeout": 1500,
+    "checked": true
+  },
+  {
+    "name": "点淘鸭摇一摇",
+    "file": "点淘鸭摇一摇.py",
+    "timeout": 900,
+    "checked": true
+  },
+  {
+    "name": "点淘鸭摇一摇额外元宝",
+    "file": "点淘鸭摇一摇额外元宝.py",
+    "timeout": 600,
+    "checked": true
+  },
+  {
+    "name": "走路赚元宝",
+    "file": "走路赚元宝.py",
+    "timeout": 900,
+    "checked": true
+  },
+  {
+    "name": "睡觉赚元宝",
+    "file": "睡觉赚元宝.py",
+    "timeout": 900,
+    "checked": true
+  },
+  {
+    "name": "淘金币任务",
+    "file": "淘金币任务.py",
+    "timeout": 1200,
+    "checked": true
+  },
+  {
+    "name": "主播打卡粉丝礼",
+    "file": "主播打卡粉丝礼.py",
+    "timeout": 900,
+    "checked": true
+  },
+  {
+    "name": "合成百元大红包",
+    "file": "合成百元大红包.py",
+    "timeout": 1200,
+    "checked": true
+  },
+  {
+    "name": "养优惠",
+    "file": "养优惠.py",
+    "timeout": 14400,
+    "checked": true
+  },
+  {
+    "name": "618花花乐",
+    "file": "618花花乐.py",
+    "timeout": 1500,
+    "checked": true
+  }
+]

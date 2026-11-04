@@ -1,0 +1,5 @@
+{
+  "cli_path": "<path-to-workbuddy-cli.js>",
+  "model": "glm-5.3-flash",
+  "timeout_seconds": 90
+}

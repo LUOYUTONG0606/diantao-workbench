@@ -1,0 +1,23 @@
+[project]
+name = "diantao-workbench"
+version = "0.3.0"
+description = "DianTao automation butler for task management, Double 11 energy and QR phone pairing"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+    "pywebview>=5,<7",
+    "qrcode>=8,<9",
+    "uiautomator2>=3,<4",
+    "requests>=2.32,<3",
+    "python-dotenv>=1,<2",
+    "pillow>=10,<13",
+    "numpy>=1.26,<3",
+    "opencv-python>=4.10,<5",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1"]
+
+[tool.uv]
+package = false

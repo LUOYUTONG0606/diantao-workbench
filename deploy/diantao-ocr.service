@@ -1,0 +1,25 @@
+[Unit]
+Description=DianTao PaddleOCR compatibility HTTP service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/paddleocr
+Environment=HOME=/home/ubuntu
+Environment=PADDLE_PDX_CACHE_HOME=/opt/paddleocr/cache
+Environment=PADDLE_PDX_MODEL_SOURCE=BOS
+Environment=PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+Environment=OMP_NUM_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/opt/paddleocr/.venv/bin/python -m uvicorn tools.ocr_compat_server:app --host 0.0.0.0 --port 8888 --workers 1 --log-level info
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+TimeoutStopSec=30
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

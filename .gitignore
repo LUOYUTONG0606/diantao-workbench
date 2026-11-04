@@ -1,0 +1,33 @@
+# 临时生成文件
+result.jpg
+temp_*.png
+temp_full.png
+temp_crop.png
+ocr_scan_result.txt
+*.log
+__pycache__/
+*.pyc
+.DS_Store
+debug_*
+calibration_screen.png
+test_live.png
+t2.png
+.codegraph/
+
+# 运行时数据（不提交）
+task_log.json
+bailian_config.json
+ocr_debug/
+.cb_vision_temp/
+*.output
+.env
+
+# 双任务工作台的环境与本机运行数据
+.runtime/
+.venv/
+workbench/.venv/
+screenshots/
+.pytest_cache/
+.venv-energy/
+.venv-ocr/
+dist/

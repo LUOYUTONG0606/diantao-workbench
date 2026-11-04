@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0B1411">
+<link rel="icon" type="image/svg+xml" href="/static/tearice-logo.svg">
+<title>Tearice · 自动化大管家</title>
+<script>
+function applyTheme(value, remember) {
+  var aliases = { green: 'ink', black: 'ink', ink: 'ink', white: 'paper', paper: 'paper' };
+  var theme = aliases[value] || 'ink';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.classList.toggle('theme-paper', theme === 'paper');
+  document.querySelector('meta[name="color-scheme"]').content = theme === 'paper' ? 'light' : 'dark';
+  document.querySelector('meta[name="theme-color"]').content = theme === 'paper' ? '#F4F1EA' : '#0B1411';
+  document.querySelectorAll('[data-theme-option]').forEach(function(button) {
+    button.setAttribute('aria-pressed', String(button.dataset.themeOption === theme));
+  });
+  if (remember !== false) {
+    try { localStorage.setItem('butler.theme', theme); } catch (error) { /* Storage can be unavailable in private profiles. */ }
+  }
+}
+try { applyTheme(localStorage.getItem('butler.theme'), false); }
+catch (error) { applyTheme('ink', false); }
+</script>
+<style>
+  :root {
+    color-scheme: dark;
+    --font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+    --font-brand: Georgia, "Times New Roman", "Songti SC", serif;
+    --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Noto Sans SC", monospace;
+    --radius-xs: 4px;
+    --radius-sm: 7px;
+    --radius-md: 10px;
+    --radius-lg: 12px;
+    --radius-xl: 14px;
+    --radius-pill: 999px;
+    --radius-round: 50%;
+    --surface-primary: #0b1411;
+    --surface-secondary: #111c18;
+    --surface-elevated: #18261f;
+    --surface-soft: #15211c;
+    --surface-panel: rgba(17, 28, 24, .88);
+    --surface-glass: rgba(11, 20, 17, .84);
+    --surface-input: rgba(6, 13, 10, .46);
+    --surface-log: #08100d;
+    --text-primary: #f2ecdf;
+    --text-secondary: #b7bdad;
+    --text-tertiary: #89948a;
+    --border-default: rgba(226, 233, 215, .12);
+    --border-strong: rgba(226, 233, 215, .24);
+    --border-accent: rgba(135, 173, 149, .34);
+    --accent-primary: #87ad95;
+    --accent-hover: #a3c5ac;
+    --accent-soft: rgba(135, 173, 149, .11);
+    --accent-soft-strong: rgba(135, 173, 149, .18);
+    --button-text: #0d1813;
+    --success: #9bc0a5;
+    --error: #e4a49c;
+    --danger-text: #eab0a8;
+    --danger-soft: rgba(228, 164, 156, .08);
+    --danger-border: rgba(228, 164, 156, .25);
+    --gold: #d0b987;
+    --grain: rgba(244, 241, 234, .035);
+    --ambient-green: rgba(101, 151, 121, .16);
+    --ambient-gold: rgba(197, 171, 117, .08);
+    --connection-start: rgba(111, 157, 128, .16);
+    --connection-end: rgba(17, 28, 24, .92);
+    --featured-start: rgba(103, 151, 121, .16);
+    --featured-end: rgba(17, 28, 24, .96);
+    --log-text: #d9ded0;
+    --scrollbar: rgba(226, 233, 215, .24);
+    --logo-shadow: rgba(0, 0, 0, .28);
+    --inset-highlight: rgba(255, 255, 255, .035);
+    --shadow-panel: 0 18px 50px rgba(0, 0, 0, .22);
+    --shadow-float: 0 16px 40px rgba(0, 0, 0, .34);
+    --shadow-soft: 0 4px 16px rgba(0, 0, 0, .14);
+  }
+  :root[data-theme="paper"] {
+    color-scheme: light;
+    --surface-primary: #f4f1ea;
+    --surface-secondary: #fbf8f1;
+    --surface-elevated: #e9e3d7;
+    --surface-soft: #ece6da;
+    --surface-panel: rgba(251, 248, 241, .9);
+    --surface-glass: rgba(244, 241, 234, .88);
+    --surface-input: rgba(255, 253, 247, .58);
+    --surface-log: #efebe1;
+    --text-primary: #24312b;
+    --text-secondary: #58655d;
+    --text-tertiary: #758078;
+    --border-default: rgba(74, 107, 93, .16);
+    --border-strong: rgba(74, 107, 93, .3);
+    --border-accent: rgba(74, 107, 93, .34);
+    --accent-primary: #4a6b5d;
+    --accent-hover: #38584a;
+    --accent-soft: rgba(74, 107, 93, .09);
+    --accent-soft-strong: rgba(74, 107, 93, .15);
+    --button-text: #fffdf7;
+    --success: #3e6a54;
+    --error: #9a4037;
+    --danger-text: #8f332a;
+    --danger-soft: rgba(154, 64, 55, .06);
+    --danger-border: rgba(154, 64, 55, .22);
+    --gold: #98733e;
+    --grain: rgba(73, 60, 40, .045);
+    --ambient-green: rgba(74, 107, 93, .12);
+    --ambient-gold: rgba(166, 132, 77, .1);
+    --connection-start: rgba(74, 107, 93, .12);
+    --connection-end: rgba(251, 248, 241, .94);
+    --featured-start: rgba(74, 107, 93, .12);
+    --featured-end: rgba(251, 248, 241, .98);
+    --log-text: #334039;
+    --scrollbar: rgba(74, 107, 93, .28);
+    --logo-shadow: rgba(73, 60, 40, .16);
+    --inset-highlight: rgba(255, 255, 255, .65);
+    --shadow-panel: 0 18px 45px rgba(73, 60, 40, .08);
+    --shadow-float: 0 18px 45px rgba(73, 60, 40, .16);
+    --shadow-soft: 0 4px 16px rgba(73, 60, 40, .07);
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--surface-primary); }
+  body {
+    margin: 0; height: 100vh; overflow: hidden;
+    font: 14px/1.5 var(--font-sans);
+    color: var(--text-primary);
+    background-color: var(--surface-primary);
+    background-image:
+      radial-gradient(circle at 8% -8%, var(--ambient-green), transparent 34%),
+      radial-gradient(circle at 96% 4%, var(--ambient-gold), transparent 28%),
+      radial-gradient(var(--grain) .55px, transparent .7px);
+    background-size: auto, auto, 8px 8px;
+    background-attachment: fixed;
+    transition: background-color .28s ease, color .28s ease;
+  }
+  ::selection { color: var(--text-primary); background: var(--accent-soft-strong); }
+  button, input, select { font: inherit; }
+  button, select { cursor: pointer; }
+  button {
+    transition: background-color .2s, border-color .2s, color .2s,
+      box-shadow .2s, transform .2s;
+  }
+  button:disabled { cursor: wait; opacity: .45; }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent-hover); outline-offset: 3px;
+  }
+  button svg, .icon { width: 18px; height: 18px; flex-shrink: 0; }
+  svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  h1, h2, h3, p { margin: 0; }
+  .hidden, [hidden] { display: none !important; }
+  .muted { color: var(--text-secondary); }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .topbar {
+    position: relative; z-index: 10;
+    height: 72px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 clamp(18px, 3vw, 40px);
+    border-bottom: 1px solid var(--border-default);
+    background: var(--surface-glass);
+    box-shadow: inset 0 1px 0 var(--inset-highlight);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    animation: topbar-in .45s ease both;
+  }
+  .brand, .topbar-right, .panel-title, .task-actions { display: flex; align-items: center; gap: 12px; }
+  .brand { min-width: 0; gap: 13px; }
+  .brand-mark {
+    width: 36px; height: 36px; display: grid; place-items: center; flex-shrink: 0;
+    filter: drop-shadow(0 5px 9px var(--logo-shadow));
+  }
+  .brand-logo { display: block; width: 36px; height: 36px; fill: none; stroke: none; }
+  .brand-name {
+    font-family: var(--font-brand); font-size: 20px; font-weight: 600;
+    line-height: 1; letter-spacing: .02em; white-space: nowrap;
+  }
+  .brand-serif {
+    font-family: var(--font-brand); font-weight: 600; letter-spacing: .02em;
+  }
+  .brand-divider { height: 20px; width: 1px; background: var(--border-strong); margin: 0 2px; }
+  .brand-label {
+    font-size: 11px; letter-spacing: .12em; color: var(--text-secondary); white-space: nowrap;
+  }
+  .topbar-right { flex-shrink: 0; gap: 16px; color: var(--text-tertiary); font-size: 11px; }
+  .live-pill { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); }
+  .dot {
+    width: 6px; height: 6px; border-radius: var(--radius-round); background: var(--text-tertiary);
+    display: inline-block; flex-shrink: 0;
+  }
+  .dot.online { background: var(--success); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .workspace {
+    position: relative; z-index: 1;
+    max-width: 1760px; margin: auto;
+    padding: 28px clamp(18px, 3vw, 40px) 26px;
+    height: calc(100vh - 72px);
+    display: flex; flex-direction: column; gap: 20px;
+  }
+  .page-heading {
+    position: relative; display: flex; align-items: center; justify-content: space-between;
+    gap: 24px; padding-left: 18px;
+    animation: reveal .55s .04s cubic-bezier(.2, .7, .2, 1) both;
+  }
+  .page-heading::before {
+    content: ""; position: absolute; left: 0; top: 4px; bottom: 3px; width: 3px;
+    border-radius: var(--radius-xs);
+    background: linear-gradient(180deg, var(--accent-primary), var(--gold));
+  }
+  .eyebrow {
+    font-size: 9px; font-weight: 650; letter-spacing: .24em;
+    color: var(--gold); margin-bottom: 6px;
+  }
+  h1 {
+    font-family: var(--font-brand); font-size: clamp(25px, 2.4vw, 33px);
+    line-height: 1.25; letter-spacing: -.015em; font-weight: 500;
+  }
+  .page-heading p { color: var(--text-secondary); font-size: 12px; margin-top: 7px; }
+  .metrics {
+    display: flex; overflow: hidden; flex-shrink: 0;
+    border: 1px solid var(--border-default); border-radius: var(--radius-lg);
+    background: var(--surface-secondary); box-shadow: var(--shadow-soft);
+  }
+  .metric { min-width: 112px; padding: 12px 20px; }
+  .metric + .metric { border-left: 1px solid var(--border-default); }
+  .metric strong {
+    font: 600 26px/1.15 var(--font-brand); font-variant-numeric: tabular-nums;
+    letter-spacing: .01em;
+  }
+  .metric span {
+    display: block; font-size: 9px; letter-spacing: .1em;
+    color: var(--text-tertiary); margin-top: 4px;
+  }
+  .metric.running strong { color: var(--accent-primary); }
+  .connection {
+    position: relative; overflow: hidden;
+    display: flex; align-items: center; gap: 16px; padding: 17px 20px;
+    border: 1px solid var(--border-accent); border-radius: var(--radius-xl);
+    background: linear-gradient(110deg, var(--connection-start), var(--connection-end) 66%);
+    box-shadow: var(--shadow-soft), inset 0 1px 0 var(--inset-highlight);
+    animation: reveal .55s .1s cubic-bezier(.2, .7, .2, 1) both;
+  }
+  .connection::after {
+    content: ""; position: absolute; width: 190px; height: 190px; right: -72px; top: -112px;
+    border: 1px solid var(--border-accent); border-radius: var(--radius-round); opacity: .55;
+    pointer-events: none;
+  }
+  .connection > * { position: relative; z-index: 1; }
+  .connection-icon {
+    display: grid; place-items: center; width: 44px; height: 50px; flex-shrink: 0;
+    border: 1px solid var(--border-accent); border-radius: var(--radius-md);
+    background: var(--accent-soft); color: var(--accent-primary);
+  }
+  .connection-icon svg { width: 23px; height: 23px; }
+  .connection-copy { flex: 1; min-width: 0; }
+  .connection-title {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--font-brand); font-weight: 600; font-size: 15px;
+  }
+  .connection-copy p {
+    color: var(--text-secondary); font-size: 11px; margin-top: 5px; overflow-wrap: anywhere;
+  }
+  .badge {
+    font-family: var(--font-sans); font-size: 9px; font-weight: 500;
+    color: var(--text-secondary); padding: 3px 8px;
+    background: var(--surface-soft); border: 1px solid var(--border-default);
+    border-radius: var(--radius-pill);
+  }
+  .badge.ready {
+    color: var(--accent-primary); border-color: var(--border-accent);
+    background: var(--accent-soft);
+  }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: 36px; padding: 8px 14px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border-strong); background: var(--surface-secondary);
+    color: var(--text-primary); font-size: 11px; white-space: nowrap;
+    box-shadow: 0 1px 0 var(--inset-highlight);
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--surface-elevated); border-color: var(--accent-primary);
+    transform: translateY(-1px);
+  }
+  .btn-primary {
+    background: var(--accent-primary); border-color: var(--accent-primary);
+    color: var(--button-text);
+    box-shadow: 0 7px 18px var(--accent-soft-strong);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover); border-color: var(--accent-hover);
+  }
+  .btn-danger {
+    color: var(--danger-text); background: var(--danger-soft);
+    border-color: var(--danger-border);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--danger-soft); border-color: var(--danger-text);
+  }
+  .icon-btn {
+    min-height: 32px; width: 32px; padding: 7px; flex-shrink: 0;
+    background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+  }
+  .icon-btn:hover:not(:disabled) {
+    background: var(--surface-elevated); border-color: var(--border-default);
+    color: var(--text-primary);
+  }
+  .panels {
+    display: grid; grid-template-columns: minmax(400px, 1.06fr) minmax(340px, 1fr);
+    gap: 20px; flex: 1; min-height: 0;
+    animation: reveal .6s .16s cubic-bezier(.2, .7, .2, 1) both;
+  }
+  .panel {
+    position: relative;
+    background: var(--surface-panel); border: 1px solid var(--border-default);
+    border-radius: var(--radius-xl); overflow: hidden;
+    display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    box-shadow: var(--shadow-panel), inset 0 1px 0 var(--inset-highlight);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .panel-heading {
+    min-height: 70px; display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 18px 20px;
+  }
+  .panel-title { gap: 9px; min-width: 0; }
+  h2 {
+    font-family: var(--font-brand); font-size: 16px; font-weight: 600;
+    letter-spacing: .03em;
+  }
+  .panel-title svg { width: 17px; height: 17px; color: var(--accent-primary); }
+  .panel-count {
+    font-size: 9px; color: var(--accent-primary); background: var(--accent-soft);
+    border: 1px solid var(--border-accent); border-radius: var(--radius-pill); padding: 2px 7px;
+  }
+  .search {
+    display: flex; align-items: center; margin: 0 20px 12px; gap: 9px;
+    border: 1px solid var(--border-default); background: var(--surface-input);
+    border-radius: var(--radius-md); padding: 9px 11px; color: var(--text-tertiary);
+    transition: border-color .2s, box-shadow .2s, background-color .2s;
+  }
+  .search:focus-within {
+    border-color: var(--accent-primary); background: var(--surface-secondary);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .search svg { width: 15px; height: 15px; }
+  .search input {
+    min-width: 0; width: 100%; background: none; border: 0; outline: none;
+    color: var(--text-primary); font-size: 11px;
+  }
+  .search input::placeholder { color: var(--text-tertiary); }
+  .task-toolbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 0 20px 14px; border-bottom: 1px solid var(--border-default);
+  }
+  .filters {
+    display: flex; gap: 3px; padding: 3px; border-radius: var(--radius-sm);
+    background: var(--surface-soft); border: 1px solid var(--border-default);
+  }
+  .filter {
+    background: transparent; border: 1px solid transparent; color: var(--text-tertiary);
+    padding: 5px 10px; border-radius: var(--radius-sm); font-size: 10px;
+  }
+  .filter:hover { color: var(--text-primary); background: var(--surface-elevated); }
+  .filter.active {
+    color: var(--accent-primary); background: var(--surface-secondary);
+    border-color: var(--border-accent); box-shadow: 0 1px 4px var(--shadow-soft);
+  }
+  .filter span { margin-left: 4px; font-size: 9px; opacity: .72; }
+  .text-button {
+    color: var(--text-tertiary); background: none; border: 0;
+    font-size: 10px; padding: 5px 4px; border-radius: var(--radius-xs);
+  }
+  .text-button:hover { color: var(--accent-primary); }
+  .tasks-scroll { flex: 1; min-height: 0; overflow: auto; padding: 15px 16px; }
+  .featured {
+    position: relative; overflow: hidden;
+    border: 1px solid var(--border-accent); border-radius: var(--radius-lg);
+    padding: 18px; margin-bottom: 14px;
+    background: linear-gradient(120deg, var(--featured-start), var(--featured-end));
+    box-shadow: inset 0 1px 0 var(--inset-highlight);
+  }
+  .featured::after {
+    content: "T"; position: absolute; right: 15px; bottom: -50px;
+    font: 600 144px/1 var(--font-brand); color: var(--text-primary);
+    opacity: .035; pointer-events: none;
+  }
+  .featured > * { position: relative; z-index: 1; }
+  .featured-label {
+    color: var(--accent-primary); font-size: 9px; font-weight: 600;
+    letter-spacing: .14em; display: flex; gap: 6px; align-items: center; margin-bottom: 10px;
+  }
+  .featured-label svg { width: 13px; height: 13px; }
+  .featured h3 {
+    font-family: var(--font-brand); font-size: 19px; font-weight: 600;
+    margin-bottom: 6px; letter-spacing: .01em;
+  }
+  .featured p { color: var(--text-secondary); font-size: 11px; line-height: 1.75; }
+  .featured-bottom {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-top: 16px;
+  }
+  .task-state {
+    font-size: 9px; color: var(--text-tertiary); display: inline-flex;
+    align-items: center; gap: 6px; white-space: nowrap;
+  }
+  .task-state.running { color: var(--accent-primary); }
+  .section-label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 9px; letter-spacing: .12em; color: var(--text-tertiary);
+    padding: 4px 5px 10px;
+  }
+  .section-label::after { content: ""; height: 1px; background: var(--border-default); flex: 1; }
+  .task-row {
+    display: flex; align-items: center; gap: 11px; padding: 12px 10px;
+    border: 1px solid transparent; border-radius: var(--radius-md);
+    transition: background-color .18s, border-color .18s;
+  }
+  .task-row + .task-row { margin-top: 2px; }
+  .task-row:hover { background: var(--surface-soft); border-color: var(--border-default); }
+  .task-row.selected { border-color: var(--border-accent); background: var(--accent-soft); }
+  .task-icon {
+    display: grid; place-items: center; width: 32px; height: 36px; flex-shrink: 0;
+    border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+    background: var(--surface-input); color: var(--accent-primary);
+  }
+  .task-icon svg { width: 15px; height: 15px; }
+  .task-copy { flex: 1; min-width: 0; }
+  .task-name { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+  .task-description {
+    font-size: 10px; color: var(--text-tertiary); margin-top: 3px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .task-meta { margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+  .task-actions { gap: 5px; flex-shrink: 0; }
+  .task-actions .btn { min-height: 30px; padding: 5px 10px; font-size: 10px; border-radius: var(--radius-sm); }
+  .panel-footer {
+    padding: 11px 20px; border-top: 1px solid var(--border-default);
+    font-size: 9px; color: var(--text-tertiary);
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .log-panel { background: var(--surface-panel); }
+  .log-panel .panel-heading { background: transparent; }
+  .log-controls {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 20px 14px; border-bottom: 1px solid var(--border-default);
+  }
+  .log-controls select {
+    flex: 1; min-width: 0; max-width: 100%; padding: 7px 9px;
+    background: var(--surface-input); color: var(--text-secondary);
+    border: 1px solid var(--border-default); border-radius: var(--radius-sm); font-size: 10px;
+  }
+  .log-controls select:focus { border-color: var(--accent-primary); }
+  option { background: var(--surface-secondary); color: var(--text-primary); }
+  .log-container {
+    flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column;
+    background: var(--surface-log);
+  }
+  .log-terminal {
+    flex: 1; min-height: 0; overflow: auto; padding: 16px 18px;
+    font: 11px/1.9 var(--font-mono);
+  }
+  .log-line { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 5px; }
+  .log-time {
+    flex-shrink: 0; font-size: 9px; color: var(--text-tertiary);
+    padding-top: 1px; font-variant-numeric: tabular-nums;
+  }
+  .log-message {
+    min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--log-text);
+  }
+  .log-tag { color: var(--accent-primary); margin-right: 7px; font-size: 9px; }
+  .log-error .log-message { color: var(--danger-text); }
+  .log-info .log-message, .log-exit .log-message { color: var(--text-secondary); }
+  .empty { text-align: center; padding: 48px 20px; color: var(--text-tertiary); font-size: 11px; }
+  .empty svg { width: 30px; height: 30px; margin-bottom: 12px; opacity: .55; }
+  .empty h3 {
+    font: 600 14px var(--font-brand); color: var(--text-secondary); margin-bottom: 7px;
+    letter-spacing: .02em;
+  }
+  .empty p { line-height: 1.8; font-family: var(--font-sans); }
+  .log-empty {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; pointer-events: none;
+  }
+  .jump-bottom { position: absolute; bottom: 14px; right: 16px; box-shadow: var(--shadow-float); }
+  .footer-note { display: flex; align-items: center; gap: 6px; }
+  .error-notice {
+    color: var(--danger-text); font-size: 11px; padding: 10px 14px;
+    border: 1px solid var(--danger-border); border-radius: var(--radius-sm);
+    background: var(--danger-soft);
+  }
+  .overlay {
+    position: fixed; inset: 0; z-index: 30;
+    background: rgba(5, 10, 8, .64); backdrop-filter: blur(9px);
+    -webkit-backdrop-filter: blur(9px);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .dialog {
+    width: min(100%, 440px); max-height: calc(100vh - 40px); overflow: auto;
+    border: 1px solid var(--border-strong); background: var(--surface-secondary);
+    border-radius: var(--radius-xl); padding: 24px;
+    box-shadow: var(--shadow-float), inset 0 1px 0 var(--inset-highlight);
+  }
+  .dialog-heading {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 16px; margin-bottom: 20px;
+  }
+  .dialog-heading h2 { font-size: 21px; }
+  .dialog-heading p { color: var(--text-secondary); font-size: 11px; margin-top: 6px; }
+  .qr-image {
+    width: 224px; height: 224px; background: #fff; border-radius: var(--radius-md);
+    padding: 12px; margin: 0 auto 16px; display: grid; place-items: center;
+    color: #6b7280; font-size: 12px; box-shadow: var(--shadow-soft);
+  }
+  .qr-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .qr-status {
+    min-height: 40px; text-align: center; color: var(--text-secondary);
+    font-size: 12px; margin: 12px 0; overflow-wrap: anywhere;
+  }
+  .qr-instructions {
+    background: var(--surface-input); padding: 15px 16px;
+    border: 1px solid var(--border-default); border-radius: var(--radius-md);
+    font-size: 11px; color: var(--text-secondary);
+  }
+  .qr-instructions ol { padding-left: 18px; margin: 0; }
+  .qr-instructions li + li { margin-top: 8px; }
+  .qr-instructions strong { color: var(--text-primary); font-weight: 600; }
+  .qr-actions { display: flex; justify-content: center; gap: 8px; margin-top: 18px; }
+  .toasts {
+    position: fixed; right: 24px; top: 86px; z-index: 50;
+    display: flex; flex-direction: column; gap: 8px;
+    max-width: min(380px, calc(100vw - 48px));
+  }
+  .toast {
+    background: var(--surface-elevated); padding: 12px 16px; font-size: 12px;
+    border: 1px solid var(--border-strong); border-left: 3px solid var(--accent-primary);
+    border-radius: var(--radius-sm); box-shadow: var(--shadow-float);
+    animation: enter .22s ease-out; overflow-wrap: anywhere;
+  }
+  .toast.error { border-left-color: var(--error); }
+  .theme-switch {
+    display: inline-flex; gap: 3px; padding: 4px;
+    border: 1px solid var(--border-default); border-radius: var(--radius-pill);
+    background: var(--surface-soft);
+  }
+  .theme-option {
+    position: relative; color: var(--text-secondary); background: transparent;
+    border: 1px solid transparent; border-radius: var(--radius-pill);
+    padding: 5px 10px 5px 21px; font-size: 9px; letter-spacing: .08em;
+  }
+  .theme-option::before {
+    content: ""; position: absolute; left: 9px; top: 50%; width: 6px; height: 6px;
+    border-radius: var(--radius-round); transform: translateY(-50%);
+  }
+  .theme-option[data-theme-option="ink"]::before {
+    background: #4a6b5d; box-shadow: inset 0 0 0 1px rgba(244, 241, 234, .22);
+  }
+  .theme-option[data-theme-option="paper"]::before {
+    background: #f4f1ea; box-shadow: inset 0 0 0 1px rgba(74, 107, 93, .32);
+  }
+  .theme-option:hover { color: var(--text-primary); }
+  .theme-option[aria-pressed="true"] {
+    background: var(--surface-secondary); color: var(--text-primary);
+    border-color: var(--border-strong); box-shadow: 0 2px 7px var(--shadow-soft);
+  }
+  :root[data-theme="paper"] .theme-option[aria-pressed="true"] {
+    background: var(--surface-primary); border-color: var(--accent-primary);
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: var(--radius-pill); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent-primary); }
+  @keyframes enter { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes topbar-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes reveal { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: translateY(0); } }
+  @media (min-width: 1450px) {
+    .panels { grid-template-columns: minmax(460px, 1fr) minmax(420px, 1.12fr); }
+  }
+  @media (max-height: 640px) and (min-width: 761px) {
+    .workspace { padding-top: 18px; padding-bottom: 18px; gap: 14px; }
+    .connection { padding: 13px 18px; }
+    .panel-heading { min-height: 60px; padding-top: 14px; padding-bottom: 14px; }
+  }
+  @media (max-width: 940px) {
+    .topbar { padding: 0 20px; }
+    .workspace { padding: 22px 20px; gap: 16px; }
+    .panels { grid-template-columns: minmax(320px, 1fr) minmax(280px, .96fr); gap: 14px; }
+    .metrics .metric { min-width: 98px; padding-left: 16px; padding-right: 16px; }
+    .brand-label { display: none; }
+    .brand-divider { display: none; }
+    .task-row { gap: 8px; padding: 11px 6px; }
+    .task-icon { display: none; }
+  }
+  @media (max-width: 760px) {
+    body { height: auto; min-height: 100vh; overflow: auto; }
+    .topbar { height: 64px; padding: 0 16px; }
+    .topbar-right { gap: 10px; }
+    .topbar-right > .live-pill, .topbar-right time { display: none; }
+    .workspace { height: auto; padding: 20px 16px 28px; gap: 16px; }
+    .page-heading { gap: 16px; }
+    .panels { grid-template-columns: 1fr; }
+    .task-panel { max-height: 660px; }
+    .log-panel { height: 430px; }
+    .toasts { top: 76px; right: 16px; max-width: calc(100vw - 32px); }
+  }
+  @media (max-width: 560px) {
+    .topbar { height: 60px; padding: 0 12px; }
+    .brand { gap: 9px; }
+    .brand-mark, .brand-logo { width: 34px; height: 34px; }
+    .brand-name { font-size: 18px; }
+    .theme-switch { padding: 3px; gap: 2px; }
+    .theme-option { padding: 5px 8px 5px 19px; font-size: 8.5px; }
+    .theme-option::before { left: 8px; width: 5px; height: 5px; }
+    .workspace { padding: 18px 12px 24px; }
+    .page-heading { flex-direction: column; align-items: stretch; padding-left: 15px; }
+    .metrics { width: 100%; }
+    .metric { flex: 1; min-width: 0; padding: 10px 14px; }
+    .metric strong { font-size: 23px; }
+    h1 { font-size: 24px; }
+    .connection { padding: 14px; gap: 12px; flex-wrap: wrap; }
+    .connection-copy { flex-basis: calc(100% - 58px); }
+    .connection > .btn { width: 100%; }
+    .panel-heading { min-height: 62px; padding: 14px 16px; }
+    .search { margin: 0 16px 10px; }
+    .task-toolbar { padding: 0 16px 12px; }
+    .tasks-scroll { padding: 12px; }
+    .panel-footer { padding: 10px 16px; }
+    .log-controls { padding: 0 16px 12px; }
+    .log-terminal { padding: 14px; }
+    .task-actions .icon-btn { display: none; }
+    .dialog { padding: 20px; }
+    .qr-image { width: min(224px, 100%); height: auto; aspect-ratio: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation: none !important; transition: none !important; scroll-behavior: auto !important;
+    }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" aria-hidden="true" style="position:absolute">
+  <defs>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></symbol>
+    <symbol id="i-qr" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><path d="M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 5 11 7-11 7z"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v16m-6-6 6 6 6-6"/></symbol>
+  </defs>
+</svg>
+<div id="toast-container" class="toasts" role="status" aria-live="polite"></div>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">
+    <svg class="brand-logo" viewBox="0 0 100 100" width="36" height="36" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="2" width="96" height="96" rx="22" fill="#F4F1EA" stroke="rgba(74, 107, 93, 0.18)" stroke-width="1.5"/>
+      <circle cx="50" cy="50" r="36" fill="#4A6B5D"/>
+      <path d="M25 44 C25 36.5 30 33 37.5 33 H46 C46 40.5 41 44 33.5 44 H25 Z" fill="#F4F1EA"/>
+      <path d="M44 88 V47 C44 37.5 49.5 33 59 33 H75 C75 41.5 69.5 46 60 46 H55.5 C57.5 43.5 60 42 63 42 C58.5 42 55 44.5 55 49.5 V88 H44 Z" fill="#F4F1EA"/>
+    </svg>
+  </span><span class="brand-name">Tearice</span><span class="brand-divider"></span><span class="brand-label">日常自动化工作台</span></div>
+  <div class="topbar-right">
+    <div class="theme-switch" role="group" aria-label="界面配色">
+      <button class="theme-option" data-theme-option="ink" aria-label="玄墨茶绿配色" aria-pressed="true">玄墨</button>
+      <button class="theme-option" data-theme-option="paper" aria-label="宣纸暖白配色" aria-pressed="false">宣纸</button>
+    </div>
+    <span class="live-pill"><i id="service-dot" class="dot"></i><span id="service-status">正在连接工作台</span></span><time id="clock" class="mono"></time>
+  </div>
+</header>
+<main class="workspace">
+  <section class="page-heading" aria-labelledby="page-title">
+    <div><div class="eyebrow">TEARICE · DAILY RITUAL</div><h1 id="page-title"><span class="brand-serif">Tearice</span> 自动化大管家</h1><p>全项目任务统一管理 · 同一时间执行一项任务</p></div>
+    <div class="metrics"><div class="metric"><strong id="stat-total">—</strong><span>任务入口</span></div><div class="metric running"><strong id="stat-running">—</strong><span>正在运行</span></div></div>
+  </section>
+  <section class="connection" aria-label="手机连接">
+    <div class="connection-icon"><svg><use href="#i-phone"/></svg></div>
+    <div class="connection-copy"><div class="connection-title">手机连接 <span id="device-badge" class="badge">检测中</span></div><p id="device-description" role="status">正在检查手机连接状态…</p></div>
+    <button id="connect-phone" class="btn" aria-haspopup="dialog"><svg><use href="#i-qr"/></svg>扫码连接手机</button>
+  </section>
+  <div id="load-error" class="error-notice" role="alert" hidden></div>
+  <div class="panels">
+    <section class="panel task-panel" aria-labelledby="tasks-title">
+      <div class="panel-heading"><div class="panel-title"><svg><use href="#i-code"/></svg><h2 id="tasks-title">Python 任务</h2><span id="task-count" class="panel-count">0</span></div><button id="refresh-tasks" class="icon-btn" aria-label="刷新任务与手机状态" title="刷新"><svg><use href="#i-refresh"/></svg></button></div>
+      <label class="search"><svg><use href="#i-search"/></svg><input id="task-search" type="search" placeholder="搜索任务名称或描述…" aria-label="搜索任务"></label>
+      <div class="task-toolbar">
+        <div class="filters" aria-label="筛选任务"><button class="filter active" data-filter="all" aria-pressed="true">全部<span id="filter-all-count">0</span></button><button class="filter" data-filter="running" aria-pressed="false">运行中<span id="filter-running-count">0</span></button></div>
+        <button id="stop-running" class="text-button" disabled>停止运行中任务</button>
+      </div>
+      <div class="tasks-scroll"><div id="featured-task"></div><div id="individual-label" class="section-label">任务列表</div><div id="script-list" role="list" aria-label="任务列表"></div><div id="script-empty" class="empty" hidden><svg><use href="#i-search"/></svg><h3>没有找到任务</h3><p id="task-empty-description">试试其他关键词。</p></div></div>
+      <div class="panel-footer"><span id="task-footer">正在读取任务列表</span><span>按需启动 · 手动可停</span></div>
+    </section>
+    <section class="panel log-panel" aria-labelledby="logs-title">
+      <div class="panel-heading"><div class="panel-title"><svg><use href="#i-log"/></svg><h2 id="logs-title">执行日志</h2></div><span id="log-live" class="live-pill" style="font-size:10px"><i class="dot"></i>等待任务</span></div>
+      <div class="log-controls"><select id="log-filter" aria-label="选择查看日志的任务"><option value="all">全部任务</option></select><button id="clear-logs" class="text-button">清空显示</button></div>
+      <div class="log-container">
+        <div id="log-terminal" class="log-terminal" role="log" aria-label="任务执行日志" aria-live="off"><div id="log-content"></div></div>
+        <div id="log-empty" class="log-empty empty"><div><svg><use href="#i-log"/></svg><h3>每一步，都看得见</h3><p>启动任务后，进度会实时显示在这里。<br>也可以点击任务旁的日志按钮查看记录。</p></div></div>
+        <button id="log-scroll-hint" class="btn jump-bottom" hidden><svg><use href="#i-down"/></svg><span id="scroll-hint-text">回到最新</span></button>
+      </div>
+      <div class="panel-footer"><span class="footer-note"><i id="follow-dot" class="dot online"></i><span id="follow-status">自动跟随最新日志</span></span><span class="mono" id="log-count">0 行</span></div>
+    </section>
+  </div>
+</main>
+<div id="adb-qr-modal" class="overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="qr-title" aria-describedby="qr-subtitle">
+  <div class="dialog">
+    <div class="dialog-heading"><div><h2 id="qr-title">扫码连接手机</h2><p id="qr-subtitle">Android 11 及以上 · 手机与电脑连接同一 WiFi</p></div><button id="qr-close" class="icon-btn" aria-label="关闭扫码窗口"><svg><use href="#i-close"/></svg></button></div>
+    <div id="adb-qr-image-area" class="qr-image">正在生成二维码…</div>
+    <p id="adb-qr-status" class="qr-status" role="status" aria-live="polite">等待扫码</p>
+    <div class="qr-instructions"><ol><li>手机打开<strong>设置 → 开发者选项 → 无线调试</strong>。</li><li>选择<strong>使用二维码配对设备</strong>，扫描上方二维码。</li><li>配对后自动连接，回到工作台即可启动任务。</li></ol></div>
+    <div class="qr-actions"><button id="qr-regenerate" class="btn"><svg><use href="#i-refresh"/></svg>重新生成</button><button id="adb-qr-connect-btn" class="btn btn-primary" hidden>重试连接</button></div>
+  </div>
+</div>
+<script>
+'use strict';
+var apps = [], taskFilter = 'all', search = '', logFilter = 'all';
+var streams = {}, logs = [], pending = new Set(), finishedStreams = new Set();
+var following = true, unread = 0, refreshing = false, qrNonce = 0;
+var qrSession = null, qrTimer = null, qrBusy = false, qrReturnFocus = null;
+var MAX_LOGS = 300;
+var $ = function(id) { return document.getElementById(id); };
+var icon = function(name) { return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>'; };
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+async function request(url, options) {
+  var response = await fetch(url, options);
+  var data = await response.json();
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '请求失败，请稍后重试');
+  return data;
+}
+function toast(message, type) {
+  var item = document.createElement('div');
+  item.className = 'toast' + (type === 'error' ? ' error' : '');
+  item.textContent = message;
+  $('toast-container').appendChild(item);
+  setTimeout(function() { item.remove(); }, 4500);
+}
+function taskName(id) { var task = apps.find(function(a) { return a.id === id; }); return task ? task.name : id; }
+function taskState(task) {
+  var running = task.status === 'running';
+  if (task.available === false) return '<span class="task-state">脚本缺失</span>';
+  return '<span class="task-state' + (running ? ' running' : '') + '"><i class="dot' + (running ? ' online' : '') + '"></i>' + (running ? '运行中' : '待执行') + '</span>';
+}
+function taskActions(task, featured) {
+  var running = task.status === 'running', busy = pending.has(task.id);
+  var guard = task.id === 'diantao-work-guard';
+  var blocked = !running && (task.available === false || (!guard && apps.some(function(a) { return a.status === 'running' && a.id !== 'diantao-work-guard'; })));
+  return '<div class="task-actions"><button class="icon-btn" data-action="logs" data-id="' + escapeHtml(task.id) + '" title="查看日志" aria-label="查看' + escapeHtml(task.name) + '的日志">' + icon('log') + '</button>' +
+    (guard && running ? '<button class="btn" data-action="calibrate" data-id="' + escapeHtml(task.id) + '"' + (busy ? ' disabled' : '') + '>立即校准</button>' : '') +
+    '<button class="btn ' + (running ? 'btn-danger' : 'btn-primary') + '" data-action="' + (running ? 'stop' : 'start') + '" data-id="' + escapeHtml(task.id) + '"' +
+    (busy || blocked ? ' disabled' : '') + (busy ? ' aria-busy="true"' : '') + '>' + (featured ? icon(running ? 'stop' : 'play') : '') +
+    (busy ? '处理中…' : running ? '停止' : featured ? '开始执行' : '启动') + '</button></div>';
+}
+function renderTasks() {
+  var running = apps.filter(function(a) { return a.status === 'running'; });
+  $('stat-total').textContent = apps.length;
+  $('stat-running').textContent = running.length;
+  $('task-count').textContent = apps.length;
+  $('filter-all-count').textContent = apps.length;
+  $('filter-running-count').textContent = running.length;
+  $('stop-running').disabled = !running.length || pending.size > 0;
+  document.querySelectorAll('[data-filter]').forEach(function(button) {
+    var active = button.dataset.filter === taskFilter;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  var visible = apps.filter(function(a) {
+    return (taskFilter !== 'running' || a.status === 'running') &&
+      (a.name + ' ' + (a.description || '')).toLocaleLowerCase().includes(search);
+  });
+  var featured = visible.find(function(a) { return a.id === 'diantao-coins'; });
+  $('featured-task').innerHTML = featured ?
+    '<article class="featured"><div class="featured-label">' + icon('spark') + '常用</div><h3>' + escapeHtml(featured.name) + '</h3><p>' +
+    escapeHtml(featured.description || '淘宝 → 领淘金币 → 去赚金币，逐项完成金币任务。') +
+    '</p><div class="featured-bottom">' + taskState(featured) + taskActions(featured, true) + '</div></article>' : '';
+  var individual = visible.filter(function(a) { return a !== featured; });
+  $('individual-label').hidden = !individual.length;
+  $('script-list').innerHTML = individual.map(function(task) {
+    return '<article role="listitem" class="task-row' + (logFilter === task.id ? ' selected' : '') + '">' +
+      '<div class="task-icon">' + icon('code') + '</div><div class="task-copy"><h3 class="task-name">' + escapeHtml(task.name) +
+      '</h3><p class="task-description">' + escapeHtml(task.unavailable_reason || task.description || '独立 Python 任务') + '</p><div class="task-meta">' +
+      taskState(task) + (task.pid ? '<span class="muted mono" style="font-size:9px">PID ' + escapeHtml(task.pid) + '</span>' : '') +
+      '</div>' + (task.id === 'diantao-work-guard' ? '<p class="task-description" id="guard-countdown"></p>' : '') + '</div>' + taskActions(task, false) + '</article>';
+  }).join('');
+  renderGuardTimer();
+  $('script-empty').hidden = visible.length > 0;
+  $('task-empty-description').textContent = !apps.length ? '暂未配置 Python 任务。' : taskFilter === 'running' && !search ? '启动任务后，它会显示在这里。' : '试试其他关键词或切换筛选条件。';
+  $('task-footer').textContent = '显示 ' + visible.length + ' / ' + apps.length + ' 个任务';
+  updateLogControls();
+}
+function updateLogControls() {
+  $('log-filter').innerHTML = '<option value="all">全部任务</option>' + apps.map(function(a) {
+    return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + (a.status === 'running' ? ' · 运行中' : '') + '</option>';
+  }).join('');
+  if (logFilter !== 'all' && !apps.some(function(a) { return a.id === logFilter; })) logFilter = 'all';
+  $('log-filter').value = logFilter;
+  var active = apps.filter(function(a) { return a.status === 'running' && (logFilter === 'all' || logFilter === a.id); }).length;
+  $('log-live').innerHTML = '<i class="dot' + (active ? ' online' : '') + '"></i>' + (active ? '实时接收' : '等待任务');
+}
+async function refreshTasks() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    var data = await request('/api/apps');
+    if (!Array.isArray(data.apps)) throw new Error('任务列表返回异常');
+    // Statistics, controls and log streams all share the same Python task list.
+    apps = data.apps.filter(function(a) { return a.category === 'script'; });
+    apps.forEach(function(a) { a.timerReceivedAt = Date.now(); });
+    renderTasks(); syncStreams();
+    $('load-error').hidden = true;
+    $('service-dot').classList.add('online');
+    $('service-status').textContent = '工作台已连接';
+  } catch (error) {
+    $('load-error').textContent = '任务列表暂时无法更新：' + error.message + '。可点击刷新重试。';
+    $('load-error').hidden = false;
+    $('service-dot').classList.remove('online');
+    $('service-status').textContent = '等待重新连接';
+  } finally { refreshing = false; }
+}
+async function refreshDevice() {
+  try {
+    var data = await request('/api/adb/status');
+    var devices = Array.isArray(data.devices) ? data.devices : [];
+    var ready = devices.filter(function(d) { return d.status === 'device'; });
+    $('device-badge').classList.toggle('ready', ready.length > 0);
+    $('device-badge').textContent = ready.length ? '已连接 ' + ready.length + ' 台' : '未就绪';
+    $('device-description').textContent = !data.installed ? '未找到 ADB 连接组件，请先完成安装。' :
+      ready.length > 1 ? '检测到多台手机，启动任务前请确认脚本的目标设备。' :
+      ready.length ? '手机已连接，可以启动任务。首次使用或更换手机时，可扫码配对。' :
+      devices.some(function(d) { return d.status === 'unauthorized'; }) ? '请在手机上确认调试授权，再刷新连接状态。' :
+      '首次使用请扫码配对。手机与电脑需连接同一 WiFi，并开启无线调试。';
+  } catch (error) {
+    $('device-badge').textContent = '检测失败';
+    $('device-badge').classList.remove('ready');
+    $('device-description').textContent = '暂时无法读取手机状态，请点击刷新重试。';
+  }
+}
+function syncStreams() {
+  Object.keys(streams).forEach(function(id) {
+    if (!apps.some(function(a) { return a.id === id && a.status === 'running'; })) {
+      streams[id].close(); delete streams[id];
+    }
+  });
+  apps.forEach(function(a) {
+    if (a.status !== 'running') { finishedStreams.delete(a.id); return; }
+    if (streams[a.id] || finishedStreams.has(a.id)) return;
+    var stream = new EventSource('/api/logs/' + encodeURIComponent(a.id) + '/stream');
+    streams[a.id] = stream;
+    stream.onmessage = function(event) {
+      try {
+        var data = JSON.parse(event.data);
+        appendLog(a.id, data);
+        if (data.type === 'exit') { stream.close(); delete streams[a.id]; finishedStreams.add(a.id); }
+      } catch (error) { /* EventSource reconnects transport failures. */ }
+    };
+  });
+}
+function appendLog(id, data) {
+  logs.push({id:id, type:data.type || 'log', text:String(data.text || ''), time:new Date().toLocaleTimeString('zh-CN', {hour12:false})});
+  if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS);
+  if (!following && (logFilter === 'all' || logFilter === id)) unread++;
+  renderLogs();
+}
+function renderLogs() {
+  var terminal = $('log-terminal'), top = terminal.scrollTop;
+  var visible = logs.filter(function(line) { return logFilter === 'all' || line.id === logFilter; });
+  $('log-content').innerHTML = visible.map(function(line) {
+    return '<div class="log-line log-' + (['error','info','exit'].includes(line.type) ? line.type : 'normal') + '"><time class="log-time">' +
+      escapeHtml(line.time) + '</time><span class="log-message">' + (logFilter === 'all' ? '<span class="log-tag">' + escapeHtml(taskName(line.id)) + '</span>' : '') + escapeHtml(line.text) + '</span></div>';
+  }).join('');
+  $('log-empty').hidden = visible.length > 0;
+  $('log-count').textContent = visible.length + ' 行';
+  if (following) terminal.scrollTop = terminal.scrollHeight;
+  else terminal.scrollTop = top;
+  $('log-scroll-hint').hidden = following;
+  $('scroll-hint-text').textContent = unread ? unread + ' 条新日志' : '回到最新';
+  updateFollowStatus();
+}
+async function selectLogs(id) {
+  logFilter = id; following = true; unread = 0;
+  renderTasks(); renderLogs();
+  if (id === 'all' || streams[id]) return;
+  try {
+    var data = await request('/api/logs/' + encodeURIComponent(id) + '?tail=100');
+    logs = logs.filter(function(line) { return line.id !== id; });
+    (data.lines || []).forEach(function(line) { logs.push({id:id, type:'log', text:String(line), time:'历史'}); });
+    if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS);
+    renderLogs();
+  } catch (error) { toast('读取日志失败：' + error.message, 'error'); }
+}
+async function doAction(action, id) {
+  if (pending.has(id) || !apps.some(function(a) { return a.id === id; })) return;
+  pending.add(id); renderTasks();
+  try {
+    var data = await request(action === 'calibrate' ? '/api/work-guard/refresh' : '/api/' + action + '/' + encodeURIComponent(id), {method:'POST'});
+    if (!data.ok) throw new Error(data.message || '操作未完成');
+    toast(data.message || (action === 'start' ? '任务已启动' : '任务已停止'));
+    if (action === 'start') {
+      finishedStreams.delete(id); logFilter = id; following = true; unread = 0;
+      logs = logs.filter(function(line) { return line.id !== id; });
+    }
+  } catch (error) { toast(error.message, 'error'); }
+  finally { pending.delete(id); await refreshTasks(); renderTasks(); renderLogs(); }
+}
+async function stopRunning() {
+  var targets = apps.filter(function(a) { return a.status === 'running'; });
+  for (var task of targets) await doAction('stop', task.id);
+}
+function updateFollowStatus() {
+  $('follow-dot').classList.toggle('online', following);
+  $('follow-status').textContent = following ? '自动跟随最新日志' : '正在查看历史日志';
+}
+function cancelQr(id) { if (id) fetch('/api/adb/qr-cancel/' + encodeURIComponent(id), {method:'POST'}).catch(function() {}); }
+function stopQrPoll() { clearTimeout(qrTimer); qrTimer = null; }
+function closeQr() {
+  qrNonce++; stopQrPoll(); cancelQr(qrSession); qrSession = null; qrBusy = false;
+  $('adb-qr-modal').style.display = 'none';
+  if (qrReturnFocus) qrReturnFocus.focus();
+}
+async function generateQr() {
+  var nonce = ++qrNonce;
+  stopQrPoll(); cancelQr(qrSession); qrSession = null; qrBusy = false;
+  $('adb-qr-image-area').textContent = '正在生成二维码…';
+  $('adb-qr-status').textContent = '准备连接，请稍候。';
+  $('adb-qr-connect-btn').hidden = true;
+  $('qr-regenerate').disabled = true;
+  try {
+    var data = await request('/api/adb/qr-generate', {method:'POST'});
+    // A response arriving after the dialog closes must not start pairing.
+    if (nonce !== qrNonce) { cancelQr(data.session_id); return; }
+    if (!data.session_id || !String(data.qr_image).startsWith('data:image/')) throw new Error('二维码生成异常');
+    qrSession = data.session_id;
+    var image = document.createElement('img');
+    image.src = data.qr_image; image.alt = '手机无线调试配对二维码';
+    $('adb-qr-image-area').replaceChildren(image);
+    $('adb-qr-status').textContent = '请使用手机「无线调试」中的扫码功能扫描。';
+    qrTimer = setTimeout(function() { pollQr(nonce); }, 1500);
+  } catch (error) {
+    if (nonce !== qrNonce) return;
+    $('adb-qr-image-area').textContent = '暂时无法生成';
+    $('adb-qr-status').textContent = error.message + '，请重新生成二维码。';
+  } finally { if (nonce === qrNonce) $('qr-regenerate').disabled = false; }
+}
+async function pollQr(nonce) {
+  if (nonce !== qrNonce || !qrSession || qrBusy) return;
+  qrBusy = true;
+  var again = true;
+  try {
+    var data = await request('/api/adb/qr-poll/' + encodeURIComponent(qrSession));
+    if (nonce !== qrNonce) return;
+    if (data.status === 'paired') {
+      again = false; qrBusy = false;
+      $('adb-qr-status').textContent = '配对成功，正在连接手机…';
+      await connectQr(nonce, 0);
+    } else if (data.status === 'pair_failed' || data.status === 'expired' || data.status === 'cancelled') {
+      again = false;
+      $('adb-qr-status').textContent = '配对未完成，请重新生成二维码后扫码。';
+    }
+  } catch (error) {
+    if (nonce === qrNonce) $('adb-qr-status').textContent = '正在等待连接服务恢复…';
+  } finally {
+    if (nonce === qrNonce) {
+      qrBusy = false;
+      if (again) qrTimer = setTimeout(function() { pollQr(nonce); }, 2000);
+    }
+  }
+}
+async function connectQr(nonce, attempt) {
+  if (nonce !== qrNonce || !qrSession || qrBusy) return;
+  qrBusy = true; $('adb-qr-connect-btn').hidden = true;
+  try {
+    var data = await request('/api/adb/qr-connect/' + encodeURIComponent(qrSession), {method:'POST'});
+    if (nonce !== qrNonce) return;
+    if (data.ok) {
+      $('adb-qr-status').textContent = '手机已连接，可以返回工作台启动任务。';
+      $('adb-qr-connect-btn').textContent = '完成，返回工作台';
+      $('adb-qr-connect-btn').dataset.done = 'true';
+      $('adb-qr-connect-btn').hidden = false;
+      toast('手机连接成功'); await refreshDevice();
+    } else if (attempt < 4) {
+      $('adb-qr-status').textContent = '配对成功，正在等待手机连接端口就绪…';
+      qrTimer = setTimeout(function() { connectQr(nonce, attempt + 1); }, 2000);
+    } else throw new Error(data.message || '手机暂未连接');
+  } catch (error) {
+    if (nonce !== qrNonce) return;
+    $('adb-qr-status').textContent = error.message;
+    $('adb-qr-connect-btn').textContent = '重试连接';
+    $('adb-qr-connect-btn').dataset.done = 'false';
+    $('adb-qr-connect-btn').hidden = false;
+  } finally { if (nonce === qrNonce) qrBusy = false; }
+}
+$('connect-phone').addEventListener('click', function() {
+  qrReturnFocus = document.activeElement;
+  $('adb-qr-modal').style.display = 'flex';
+  $('qr-close').focus(); generateQr();
+});
+$('qr-close').addEventListener('click', closeQr);
+$('qr-regenerate').addEventListener('click', generateQr);
+$('adb-qr-connect-btn').addEventListener('click', function() {
+  if (this.dataset.done === 'true') closeQr();
+  else connectQr(qrNonce, 0);
+});
+$('adb-qr-modal').addEventListener('click', function(event) { if (event.target === this) closeQr(); });
+document.addEventListener('keydown', function(event) {
+  if ($('adb-qr-modal').style.display === 'none') return;
+  if (event.key === 'Escape') { closeQr(); return; }
+  if (event.key === 'Tab') {
+    var buttons = Array.from($('adb-qr-modal').querySelectorAll('button')).filter(function(button) { return !button.hidden && !button.disabled; });
+    var first = buttons[0], last = buttons[buttons.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
+});
+document.addEventListener('click', function(event) {
+  var themeButton = event.target.closest('[data-theme-option]');
+  if (themeButton) applyTheme(themeButton.dataset.themeOption);
+  var action = event.target.closest('[data-action]');
+  if (action) {
+    if (action.dataset.action === 'logs') selectLogs(action.dataset.id);
+    else if (['start','stop','calibrate'].includes(action.dataset.action)) doAction(action.dataset.action, action.dataset.id);
+  }
+  var filter = event.target.closest('[data-filter]');
+  if (filter) { taskFilter = filter.dataset.filter; renderTasks(); }
+});
+$('task-search').addEventListener('input', function() { search = this.value.trim().toLocaleLowerCase(); renderTasks(); });
+$('log-filter').addEventListener('change', function() { selectLogs(this.value); });
+$('refresh-tasks').addEventListener('click', function() { refreshTasks(); refreshDevice(); });
+$('stop-running').addEventListener('click', stopRunning);
+$('clear-logs').addEventListener('click', function() { logs = []; unread = 0; renderLogs(); });
+$('log-terminal').addEventListener('scroll', function() {
+  following = this.scrollHeight - this.scrollTop - this.clientHeight < 35;
+  if (following) unread = 0;
+  $('log-scroll-hint').hidden = following; updateFollowStatus();
+});
+$('log-scroll-hint').addEventListener('click', function() { following = true; unread = 0; renderLogs(); });
+function renderGuardTimer() {
+  var target = $('guard-countdown');
+  if (!target) return;
+  var task = apps.find(function(a) { return a.id === 'diantao-work-guard'; });
+  if (!task || task.status !== 'running') { target.textContent = '守护未启动，启动后读取当前打工状态'; return; }
+  var timer = task.timer || {}, phases = {starting:'正在读取状态', checking:'等待接管校准', acting:'正在处理打工', waiting:'后台计时', retrying:'识别失败，等待重试', blocked:'需要检查页面', stopped:'守护已结束'};
+  function remaining(name) {
+    var deadline = timer[name + '_at'];
+    if (deadline == null || !timer.active) return '待识别';
+    var seconds = Math.max(0, Math.ceil(deadline - (timer.server_time + (Date.now() - (task.timerReceivedAt || Date.now())) / 1000)));
+    if (!seconds) return timer.phase === 'waiting' ? '到期，等待接管' : '到期，正在复查';
+    return String(Math.floor(seconds / 3600)).padStart(2, '0') + ':' + String(Math.floor(seconds % 3600 / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
+  }
+  target.textContent = (phases[timer.phase] || '正在读取状态') + ' · 打工 ' + remaining('work') + ' · 体力 ' + remaining('energy') +
+    (timer.phase === 'retrying' || timer.phase === 'blocked' ? ' · ' + (timer.message || '') : '');
+}
+function tick() { $('clock').textContent = new Date().toLocaleTimeString('zh-CN', {hour12:false}); renderGuardTimer(); }
+applyTheme(document.documentElement.dataset.theme, false);
+tick(); setInterval(tick, 1000);
+refreshTasks(); refreshDevice();
+setInterval(function() { refreshTasks(); refreshDevice(); }, 8000);
+window.addEventListener('beforeunload', function() { stopQrPoll(); Object.keys(streams).forEach(function(id) { streams[id].close(); }); });
+</script>
+</body>
+</html>

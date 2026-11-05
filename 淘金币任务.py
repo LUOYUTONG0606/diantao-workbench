@@ -31,9 +31,13 @@ DAILY_LABEL_TEXTS = (
     "做任务", "去参与", "去使用", "去兑换", "去领", "立即领", "领",
 )
 MAX_ATTEMPTS = 2
-# 连续多少屏「没扫到可执行任务」才收工。原来 12 太激进：页面加载慢、
-# 列表正在刷新时就容易被误判成「任务做完了」提前结束。
+# 单轮「从顶部扫到底部」最多扫多少屏，防止页面卡住时无限滚动。
 EMPTY_LIMIT = 20
+# 连续多少屏读到完全相同的文字块 → 判定已经滚到底 / 页面没动。
+STILL_SCREEN_LIMIT = 3
+# 连续多少轮「顶部 → 底部 → 回顶部」完整遍历都没有可执行任务才收工。
+# 旧逻辑只数「连续 20 屏空」：滚到底后反复读同一片区域就会误判「任务做完了」。
+SWEEP_LIMIT = 3
 # 浏览/观看类任务的最长时长上限（秒）。使用者要求浏览最长 30s。
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
 # 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
@@ -870,6 +874,29 @@ def scroll_up_to_list(tries=3):
     return read_page()
 
 
+def at_list_top(nodes):
+    """是否已经回到金币任务列表顶部（顶部锚点可见）。"""
+    texts = [normalize(n["text"]) for n in nodes]
+    return any("今日速赚" in t or t in ("为你找到最简单的任务", "完成下方任务得额外金币")
+               for t in texts)
+
+
+def scroll_to_top(tries=8):
+    """一路往上滑回列表顶部，供「完整遍历」重新开始。
+
+    旧逻辑只会往下滚，滚到底后就一直读同一片商品流，再也看不到顶部任务，
+    于是把「还有一堆任务没做」误判成「本轮已做完」。
+    """
+    for _ in range(tries):
+        nodes = read_page(force=True)
+        if at_list_top(nodes):
+            return nodes
+        swipe(screen_width // 2, int(screen_height * .35),
+              screen_width // 2, int(screen_height * .8), duration=.3)
+        time.sleep(1.0)
+    return read_page(force=True)
+
+
 def today_coins(nodes):
     """读页面上「今日速赚 N 淘金币」的 N，用作真实到账依据。
 
@@ -938,13 +965,28 @@ def run_tasks(max_tasks=30):
     attempts, finished = {}, set()
     confirmed_progress = {}
     total, confirmed, empty_times = 0, 0, 0
-    expanded = False
     expand_clicks = 0
     start_coins = None
     last_coins = None
     recover_fail = 0       # 连续恢复失败次数
     claim_streak = 0       # 连续领取累计奖励次数，防止一直卡在领取
+    sweep_empty = 0        # 连续「完整遍历都没有任务」的轮数
+    still_screens = 0      # 连续读到相同文字块的屏数（到底判定）
+    last_signature = None
+    expanded_this_lap = False
     end_reason = f"已达本轮最大执行次数 {max_tasks}"
+
+    # 刚进列表时 WebView 还在渲染：实测首屏只 OCR 到 20 多块、任务行尚未出现。
+    # 旧逻辑在这里立刻判「没任务」并点【展开】，页面一重排顶部任务就被滚走，
+    # 之后全程 0 个任务却报「本轮已做完」。先等任务行渲染出来再开始。
+    for _ in range(6):
+        boot_nodes = read_page(force=True)
+        if parse_task_list(boot_nodes):
+            break
+        time.sleep(1.2)
+    else:
+        print("  [提示] 任务行尚未渲染，仍按正常流程从顶部开始扫描")
+
     while total < max_tasks:
         nodes = read_page()
         if not is_task_page(nodes):
@@ -1011,24 +1053,66 @@ def run_tasks(max_tasks=30):
                  and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
         print(f"  [扫描] 可见 {len(nodes)} 块文字，可执行 {len(tasks)} 个任务")
         if not tasks:
-            empty_times += 1
-            if empty_times >= EMPTY_LIMIT:
-                end_reason = "连续多屏没有可执行任务，本轮任务已做完"
-                break
-            if not expanded and any(normalize(n["text"]) == "更多专享福利" for n in nodes):
-                expand = [n for n in nodes if normalize(n["text"]) == "展开"
-                          and n["cy"] > screen_height * .5]
-                if len(expand) == 1 and click_node(expand[0]):
-                    expanded = True
-                    empty_times = 0
-                    print("  点击【展开】，显示更多任务")
-                    time.sleep(1.5)
-                    for _ in range(4):
-                        scroll_list()
+            # 页面可能还在加载/切换（实测点【展开】后会短暂显示「正在切换...」、
+            # OCR 读到 0 块）。强制重扫并稍等，别把「加载中」算成一次空屏。
+            time.sleep(1.0)
+            nodes = read_page(force=True)
+            tasks = [t for t in parse_task_list(nodes)
+                     if task_key(t) not in finished
+                     and attempts.get(task_key(t), 0) < MAX_ATTEMPTS
+                     and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
+            if not tasks:
+                if not is_task_page(nodes):
+                    # 滑进商品流或页面正在切换：先回列表，不要继续往下滚
+                    scroll_up_to_list()
+                    invalidate_scan()
                     continue
-            scroll_list()
-            continue
+                empty_times += 1
+                signature = "|".join(normalize(n["text"]) for n in nodes)
+                if signature == last_signature:
+                    still_screens += 1
+                else:
+                    still_screens = 0
+                    last_signature = signature
+                if empty_times % 5 == 1:
+                    preview = [normalize(n["text"]) for n in nodes
+                               if n["cx"] > screen_width * .7][:6]
+                    print(f"  [空屏 {empty_times}] 可见 {len(nodes)} 块；右侧文字：{preview}")
+                # 还没到底就继续往下滚；不再「一空屏就点展开」把顶部任务滚没
+                if still_screens < STILL_SCREEN_LIMIT and empty_times < EMPTY_LIMIT:
+                    scroll_list()
+                    continue
+                # 扫到底了才展开「更多专享福利」；展开会重排页面，必须等切换完成
+                if not expanded_this_lap:
+                    expand = [n for n in nodes if normalize(n["text"]) == "展开"
+                              and n["cy"] > screen_height * .5]
+                    if len(expand) == 1 and click_node(expand[0]):
+                        expanded_this_lap = True
+                        expand_clicks += 1
+                        print("  点击【展开】，显示更多任务")
+                        for _ in range(5):
+                            time.sleep(1.2)
+                            if is_task_page(read_page(force=True)):
+                                break
+                # 回顶部重新完整遍历；只有连续多轮「顶→底→回顶」都空才收工
+                sweep_empty += 1
+                if sweep_empty >= SWEEP_LIMIT:
+                    end_reason = (f"连续 {sweep_empty} 轮「顶部→底部→回顶部」完整遍历"
+                                  f"都没有可执行任务，本轮任务已做完")
+                    break
+                print(f"  已扫到列表底部，回到顶部重新遍历（第 {sweep_empty + 1} 轮）")
+                scroll_to_top()
+                attempts.clear()   # 给被 MAX_ATTEMPTS 挡住的任务一次重试机会
+                empty_times = 0
+                still_screens = 0
+                last_signature = None
+                expanded_this_lap = False
+                continue
         empty_times = 0
+        still_screens = 0
+        last_signature = None
+        sweep_empty = 0
+        expanded_this_lap = False
         task = tasks[0]
         key = task_key(task)
         # 浏览/观看类任务：要求的真实时长超过上限就直接跳过，不进入、不截断。

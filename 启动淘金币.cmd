@@ -42,6 +42,15 @@ if exist "%PY_OCR%" (
     echo [WARN] 未找到 OCR 环境，跳过自动拉起；请确认 8888 端口有 OCR 服务
 )
 
+rem ---------- 1.5 手机没连上时，自动在热点网段找回无线调试连接 ----------
+rem Windows 移动热点不转发 mDNS，工作台扫码在「手机连电脑热点」时找不到手机，
+rem 这里按 IP 直连找回；已有可用设备时脚本会秒退，不干扰正常流程。
+"%ADB%" devices | findstr /r /c:"device$" >nul
+if errorlevel 1 (
+    echo [自动重连] 未检测到手机，正在热点网段里查找无线调试端口...
+    "%PY%" -u "%~dp0tools\reconnect_phone.py" --adb "%ADB%"
+)
+
 rem ---------- 2. 检查手机连接 ----------
 set "COUNT=0"
 set "DEVICE="

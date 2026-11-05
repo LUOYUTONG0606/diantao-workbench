@@ -32,6 +32,15 @@ DAILY_LABEL_TEXTS = (
 )
 MAX_ATTEMPTS = 2
 EMPTY_LIMIT = 12
+# 浏览/观看类任务的最长时长上限（秒）。使用者要求浏览最长 30s。
+# 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
+# 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
+BROWSE_CAP = 30
+# 离开浏览任务时，淘宝可能弹「放弃进度/确认离开」对话框。
+# 这些词出现在对话框里表示「留在页面」（点了就不放弃进度），优先点它们。
+LEAVE_STAY_TEXTS = ("继续浏览", "继续", "取消", "暂不", "再看看", "我再看看", "留在页面", "留在本页")
+# 这些词表示「放弃/确认离开」（点了进度就作废），绝不能点。
+LEAVE_ABANDON_TEXTS = ("放弃", "确认离开", "确定离开", "离开", "不保留", "退出浏览", "退出任务")
 
 # 会跳出淘宝的任务：一律不做（含支付宝系、其他 App、以及站内的下单/授权类）。
 # 使用者明确要求：打开别的应用的任务不要做。
@@ -203,6 +212,33 @@ def read_page(force=False):
 def dismiss_notice(nodes):
     return click_unique(nodes, ("我知道了", "稍后再说", "暂不", "关闭弹窗",
                                 "开心收下", "收下", "开心领取"))
+
+
+def dismiss_leave_dialog(nodes):
+    """离开浏览任务时，淘宝常弹「放弃进度/确认离开」对话框。
+
+    只要页面上出现「放弃进度/确认离开」这类放弃按钮，就优先点「继续浏览/继续/取消」
+    留在页面，绝不点放弃。返回 True 表示拦下了一次放弃对话框（已选「留在本页」）。
+    用子串匹配，兼容 OCR 读出的「放弃进度」「确认要离开吗」等变体。
+    """
+    def _has(n, words):
+        t = normalize(n["text"])
+        return any(w in t for w in words)
+    abandon = [n for n in nodes if _has(n, LEAVE_ABANDON_TEXTS)]
+    if not abandon:
+        return False
+    # 优先点「留在页面」类按钮；若没有，点「取消」（大多数对话框里取消=不离开）。
+    stay = [n for n in nodes if _has(n, LEAVE_STAY_TEXTS)]
+    if stay:
+        target = stay[0]
+        label = normalize(target["text"])
+        if click_node(target):
+            print(f"  🛡 检测到放弃进度对话框，已点【{label}】留在页面，避免进度取消")
+            return True
+    elif click_unique(nodes, ("取消", "暂不")):
+        print("  🛡 检测到放弃进度对话框，已点【取消】留在页面，避免进度取消")
+        return True
+    return False
 
 
 def home_entry(nodes):
@@ -505,7 +541,7 @@ def exec_task(task_def):
         if not do_search():
             return False
         print("  搜索完成，在搜索结果页浏览")
-        result = execute_browse_task(d, min_duration=seconds,
+        result = execute_browse_task(d, min_duration=min(seconds, BROWSE_CAP),
                                      max_wait=30)
     elif kind == "quiz":
         # 趣味课堂类答题：进入后随机选一个答案。
@@ -517,7 +553,7 @@ def exec_task(task_def):
         result = execute_video_task(d, name, fresh[0]["cx"], fresh[0]["cy"],
                                     duration=seconds, verify_media_page=True)
     else:
-        result = execute_browse_task(d, min_duration=seconds,
+        result = execute_browse_task(d, min_duration=min(seconds, BROWSE_CAP),
                                      max_wait=30)
     # 浏览/观看过程中是 u2_scanner 内部在滑动屏幕，不会经过本文件的封装，
     # 所以这里必须手动作废扫描缓存，否则下一步会读到浏览前的旧画面。
@@ -658,6 +694,15 @@ def back_to_task_page():
             backs += 1
             press_back()
             time.sleep(1.2)
+            # 离开浏览任务时淘宝可能弹「放弃进度」对话框：拦下并留在页面，
+            # 避免把刚做了一半的任务进度作废（即「自动取消进度」）。
+            after = read_page()
+            if dismiss_leave_dialog(after):
+                # 已选「留在本页」，重新判断当前是不是任务列表；不是就继续退。
+                if is_task_page(after):
+                    return True
+                backs -= 1  # 没真正退出去，这一下不算，避免上限被对话框吃光
+                continue
         else:
             print("  返回次数已达上限，停止本轮")
             return False
@@ -838,6 +883,14 @@ def run_tasks(max_tasks=30):
         empty_times = 0
         task = tasks[0]
         key = task_key(task)
+        # 浏览/观看类任务：要求的真实时长超过上限就直接跳过，不进入、不截断。
+        # 否则会被 30s 强制退出 → 淘金币判「进度不计入」，即「自动取消进度」。
+        if (task["type"] in ("browse", "search", "live", "video")
+                and task["seconds"] > BROWSE_CAP):
+            print(f"  ⏭ 跳过【{task['name']}】：要求 {task['seconds']}s 超过 {BROWSE_CAP}s 上限，"
+                  f"避免被截断导致进度取消")
+            finished.add(key)
+            continue
         attempts[key] = attempts.get(key, 0) + 1
         total += 1
         before_coins = today_coins(nodes)

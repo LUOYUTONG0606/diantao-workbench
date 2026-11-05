@@ -1,6 +1,7 @@
 """双十一淘金币：淘宝首页 -> 领淘金币 -> 去赚淘金币，使用 OCR 识别。"""
 
 import argparse
+import random
 import re
 import sys
 import time
@@ -48,11 +49,10 @@ EXTERNAL_APP_TITLES = (
     "逛一逛领购物红包",   # 天猫
 )
 
-# 用户明确要求做的「顶部每日任务」：即便名字里带默认屏蔽词（课堂/蚂蚁等）也强制放行。
-# 只放行以下明确点名的任务，不波及同类的其他屏蔽项（如蚂蚁森林仍跳过）。
-ALLOW_DAILY_TASKS = (
-    "淘金币趣味课堂",   # 名字含「课堂」，但属于每日任务，要做
-    "蚂蚁庄园",         # 名字含「蚂蚁」，用户要求做的每日任务
+# 用户明确要求做的「趣味课堂」类答题每日任务：进入后随机选一个答案（见 quiz 处理）。
+# 只放行以下明确点名的任务，不波及同类的其他屏蔽项。
+QUIZ_TASKS = (
+    "淘金币趣味课堂",   # 名字含「课堂」但属于每日任务，需答题
 )
 
 # 「搜一搜」类任务要先在搜索框输入关键词再浏览，否则不算完成。
@@ -76,10 +76,9 @@ def task_key(task):
 
 def match_task_type(task_name):
     """未知任务不默认执行，保留商品三次点击任务的统一屏蔽规则。"""
-    # 用户点名要做的每日任务：放行白名单优先于一切屏蔽词（课堂/蚂蚁等）。
-    # 蚂蚁庄园若真跳到支付宝，exec_task 的包名兜底会自动退回，不会卡在外部 App。
-    if any(kw in task_name for kw in ALLOW_DAILY_TASKS):
-        return "browse"
+    # 趣味课堂需要答题：单独归为 quiz，进入后随机选一个答案。
+    if any(kw in task_name for kw in QUIZ_TASKS):
+        return "quiz"
     if is_blocked_boutique_task(task_name) or is_blacklisted(task_name):
         return "skip"
     # 会打开其他 App 的任务：直接跳过，不点
@@ -465,7 +464,7 @@ def exec_task(task_def):
     kind, name = task_def["type"], task_def["name"]
     if kind == "click_three" or is_blocked_boutique_task(name):
         return False
-    if kind not in ("browse", "live", "video", "claim", "visit", "search") or match_task_type(name) == "skip":
+    if kind not in ("browse", "live", "video", "claim", "visit", "search", "quiz") or match_task_type(name) == "skip":
         return False
     # 重新识别并定位，避免点击上一轮扫描留下的过期坐标。
     fresh = [task for task in parse_task_list(read_page())
@@ -508,6 +507,9 @@ def exec_task(task_def):
         print("  搜索完成，在搜索结果页浏览")
         result = execute_browse_task(d, min_duration=seconds,
                                      max_wait=30)
+    elif kind == "quiz":
+        # 趣味课堂类答题：进入后随机选一个答案。
+        result = execute_quiz_task(d)
     elif kind == "live":
         result = execute_live_task(d, name, fresh[0]["cx"], fresh[0]["cy"],
                                    duration=seconds + 5)
@@ -521,6 +523,68 @@ def exec_task(task_def):
     # 所以这里必须手动作废扫描缓存，否则下一步会读到浏览前的旧画面。
     invalidate_scan()
     return result
+
+
+def find_quiz_options(nodes):
+    """在答题页识别可选项：优先选项标号(A-D / ①②③④)，其次判断题(对/错/是/否)。
+
+    找不到明确选项时，退化为「屏幕中下部一组纵向并列的 2~4 个短文本块」作为选项卡片。
+    """
+    def _is_opt(t):
+        if not t:
+            return False
+        if re.match(r"^[A-Da-d][.、．。)、]?\s*\S", t) or re.fullmatch(r"[A-Da-d][.、．。)、]?", t):
+            return len(t) <= 40
+        if re.match(r"^[①②③④⑤]\s*\S", t) or re.fullmatch(r"[①②③④⑤]", t):
+            return len(t) <= 40
+        return False
+
+    opts = [n for n in nodes if _is_opt(normalize(n["text"]))]
+    if len(opts) >= 2:
+        return opts
+    # 判断题：对/错/正确/错误/是/否，至少出现两项才视为选项
+    tf = [n for n in nodes if normalize(n["text"]) in ("对", "错", "正确", "错误", "是", "否")]
+    if len(tf) >= 2:
+        return tf
+    # 兜底：屏幕中下部、纵向并列、宽度相近的 2~4 个短文本块，当作选项卡片
+    cands = [n for n in nodes
+             if screen_height * .2 <= n["cy"] <= screen_height * .85
+             and 2 <= len(normalize(n["text"])) <= 24]
+    cands.sort(key=lambda n: n["cy"])
+    groups, cur = [], []
+    for n in cands:
+        if cur and n["cy"] - cur[-1]["cy"] > screen_height * .12:
+            groups.append(cur)
+            cur = []
+        cur.append(n)
+    if cur:
+        groups.append(cur)
+    for g in groups:
+        if 2 <= len(g) <= 4:
+            xs = [n["cx"] for n in g]
+            if max(xs) - min(xs) <= screen_width * .35:
+                return g
+    return []
+
+
+def execute_quiz_task(d):
+    """进入答题页后随机选一个答案。找不到明确选项时退化为短暂浏览再返回。"""
+    landed = read_page()
+    if not landed or is_task_page(landed):
+        return False
+    options = find_quiz_options(landed)
+    if options:
+        choice = random.choice(options)
+        print(f"  答题：随机选「{choice['text']}」@({choice['cx']},{choice['cy']})")
+        click_node(choice)
+        time.sleep(2.5)
+        dismiss_notice(read_page())   # 答完可能弹「答对/答错」或领取窗，顺手关掉
+        invalidate_scan()
+        return True
+    # 没识别到选项：退化浏览，避免空跑（连测时发截图可优化识别）
+    print("  答题页未识别到明确选项，退化为短暂浏览")
+    execute_browse_task(d, min_duration=8, max_wait=12)
+    return True
 
 
 def do_search():

@@ -31,7 +31,9 @@ DAILY_LABEL_TEXTS = (
     "做任务", "去参与", "去使用", "去兑换", "去领", "立即领", "领",
 )
 MAX_ATTEMPTS = 2
-EMPTY_LIMIT = 12
+# 连续多少屏「没扫到可执行任务」才收工。原来 12 太激进：页面加载慢、
+# 列表正在刷新时就容易被误判成「任务做完了」提前结束。
+EMPTY_LIMIT = 20
 # 浏览/观看类任务的最长时长上限（秒）。使用者要求浏览最长 30s。
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
 # 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
@@ -41,6 +43,17 @@ BROWSE_CAP = 30
 LEAVE_STAY_TEXTS = ("继续浏览", "继续", "取消", "暂不", "再看看", "我再看看", "留在页面", "留在本页")
 # 这些词表示「放弃/确认离开」（点了进度就作废），绝不能点。
 LEAVE_ABANDON_TEXTS = ("放弃", "确认离开", "确定离开", "离开", "不保留", "退出浏览", "退出任务")
+
+# ── 「任务老是自动结束」防护 ──────────────────────────────
+# 旧逻辑：只要一次 d.app_current().package != com.taobao.taobao，就直接
+# return False → 主循环 break → 整轮任务结束（日志「已离开淘宝，停止」）。
+# 但界面切换瞬间前台包名会短时变成桌面/系统弹窗/空值，属于正常抖动；
+# 浏览任务按返回也可能短暂退到桌面。现在改成：多次确认 → 自动恢复 →
+# 只有连续多次恢复都失败才结束，并在结束时打印明确原因。
+TAOBAO_CONFIRM = 3        # 连续 N 次读到非淘宝包名才判定「真的离开了」
+RECOVER_WAIT = 45         # 等待淘宝回到前台的最长秒数（期间任务不结束）
+MAX_RECOVER_FAILURES = 4  # 连续恢复失败次数上限
+LEAVE_DIALOG_LIMIT = 2    # 「放弃进度」对话框最多拦几次，避免无限留在页面
 
 # 会跳出淘宝的任务：一律不做（含支付宝系、其他 App、以及站内的下单/授权类）。
 # 使用者明确要求：打开别的应用的任务不要做。
@@ -195,9 +208,81 @@ def click_unique(nodes, labels):
     return len(matches) == 1 and click_node(matches[0])
 
 
+def _pkg_once():
+    """单次读取前台包名；异常或空值返回 None（表示「未知」，不据此判定离开）。"""
+    try:
+        info = d.app_current()
+        if isinstance(info, dict):
+            return info.get("package") or None
+    except Exception:
+        pass
+    return None
+
+
+def taobao_on_top(confirm=1, interval=0.8):
+    """淘宝是否在前台。
+
+    app_current() 在 Activity 切换的 1~2 秒窗口里会返回桌面 / 系统弹窗 /
+    空 dict，这是正常抖动，不能当成「已离开淘宝」。所以：
+      - 读到空值一律按「仍在前台」处理；
+      - confirm>1 时要求连续多次都读到别的包名，才判定真的离开。
+    """
+    for i in range(confirm):
+        pkg = _pkg_once()
+        if pkg is None or pkg == TB_APP or pkg.startswith(TB_APP + ":"):
+            return True
+        if i < confirm - 1:
+            time.sleep(interval)
+    return False
+
+
+def recover_taobao_front(timeout=RECOVER_WAIT):
+    """真不在淘宝前台时的恢复流程：先等自动恢复，再温和拉回，全程不结束任务。
+
+    优先「等一下 + 多次确认」，因为多数情况只是界面切换抖动；确实离开时
+    （误退桌面 / 系统弹窗 / 外部 App）先按一次返回，再调用已有的
+    ensure_taobao()（内含应用分身选择框处理）把淘宝带回来。
+    """
+    if taobao_on_top(confirm=TAOBAO_CONFIRM):
+        return True
+    pkg = _pkg_once()
+    print(f"  ⚠ 前台不是淘宝（{pkg}），等待恢复（最多 {timeout}s，任务不会结束）…")
+    deadline = time.monotonic() + timeout
+    tried_back = False
+    tried_launch = False
+    while time.monotonic() < deadline:
+        if taobao_on_top(confirm=2, interval=0.5):
+            print("  ✅ 淘宝已回到前台，继续执行")
+            invalidate_scan()
+            return True
+        # 跳到外部 App 时，先按一次返回，通常能直接退回淘宝
+        if not tried_back:
+            tried_back = True
+            try:
+                press_back()
+            except Exception:
+                pass
+            time.sleep(1.2)
+            if taobao_on_top(confirm=2, interval=0.5):
+                print("  ✅ 已退回淘宝，继续执行")
+                invalidate_scan()
+                return True
+        # 等了几秒还没回来，才尝试把淘宝带回前台（会处理分身选择框）
+        if not tried_launch and time.monotonic() > deadline - (timeout - 4):
+            tried_launch = True
+            print("  尝试把淘宝带回前台…")
+            try:
+                ensure_taobao(timeout=20)
+            except Exception as exc:
+                print(f"  带回淘宝时出错：{exc}")
+        time.sleep(2)
+    print("  ❌ 等待超时，淘宝仍未回到前台")
+    return False
+
+
 def read_page(force=False):
     """读当前页面文字块。同屏重复读直接命中缓存，省一次 OCR。"""
-    if d.app_current().get("package") != TB_APP:
+    if not taobao_on_top():
         return []
     now = time.monotonic()
     if (not force and _scan_cache["nodes"] is not None
@@ -371,19 +456,23 @@ def navigate_to_task_list():
       有「领淘金币」→ 点（首页宫格）
       都没有 → 返回键退一层，最多 3 次
     """
-    # 不重启淘宝，直接从当前页面往下走
-    if d.app_current().get("package") != TB_APP:
-        print("  不在淘宝前台，停止（请先在手机上打开淘宝首页）")
-        return False
+    # 不重启淘宝，直接从当前页面往下走；短暂抖动不算离开
+    if not taobao_on_top(confirm=TAOBAO_CONFIRM):
+        if not recover_taobao_front():
+            print("  当前不在淘宝前台，无法进入任务列表")
+            return False
     time.sleep(1)
 
     backs = 0
     entry_clicks = 0
     for _ in range(10):
-        # 不重启淘宝：退出去了就停止，由人手动再打开
-        if d.app_current().get("package") != TB_APP:
-            print("  已离开淘宝，停止（请重新打开淘宝首页后再启动）")
-            return False
+        # 退出去了先自动恢复，只有多次恢复都失败才结束本轮导航
+        if not taobao_on_top(confirm=TAOBAO_CONFIRM):
+            if not recover_taobao_front():
+                print("  已离开淘宝且无法恢复，停止本轮导航")
+                return False
+            invalidate_scan()
+            continue
         nodes = read_page()
         if not nodes:
             time.sleep(1.2)
@@ -509,24 +598,24 @@ def exec_task(task_def):
     if len(fresh) != 1 or not click_node(fresh[0]):
         return False
     # ⛔ 点完立刻检查：一旦跳到别的 App 就马上退回淘宝，这一项不计入
-    # （使用者要求：打开别的应用的任务不做）
-    # 原本固定等 3×1s；click_node 已等 1.1s，跳转通常早就发生，故第一次直接查。
+    # （使用者要求：打开别的应用的任务不做）。用多次确认过滤界面切换抖动，
+    # 否则一次误读就会把淘宝顶到 Welcome 首页、白白丢掉当前任务。
     for _ in range(2):
-        current = d.app_current().get("package")
-        if current == TB_APP:
+        if taobao_on_top(confirm=2, interval=0.6):
             break
+        current = _pkg_once()
         print(f"  ⛔ 已跳到其他应用（{current}），立即返回淘宝，跳过该项")
         try:
             press_back()
         except Exception:
             pass
         time.sleep(1)
-    if d.app_current().get("package") != TB_APP:
-        try:
-            d.shell("am start -n com.taobao.taobao/com.taobao.tao.welcome.Welcome")
-            time.sleep(3)
-        except Exception:
-            pass
+    if not taobao_on_top(confirm=TAOBAO_CONFIRM):
+        # 不再直接 am start 硬顶，交给统一恢复流程（含分身框处理）
+        if not recover_taobao_front():
+            return False
+        invalidate_scan()
+        print("  已回到淘宝但离开了任务页，本项跳过，继续做其它任务")
         return False
 
     if kind in ("claim", "visit"):
@@ -663,18 +752,25 @@ def do_search():
 
 
 def back_to_task_page():
-    """回到金币任务列表。不重启淘宝：退到活动主页就重进，离开淘宝就停止。
+    """回到金币任务列表。退到活动主页就重进，误退/抖动会自动恢复，不再一退就结束整轮。
 
-    返回键不再固定按 2 次：走了「搜索 → 商品详情」的任务需要连退多一层
+    返回键不固定按 2 次：走了「搜索 → 商品详情」的任务需要连退多一层
     （详情 → 结果页 → 搜索落地页 → 任务列表）。真正导致退出桌面的是
-    在淘宝主界面（TBMainActivity）上继续按返回，所以在那一层直接停手。
+    在淘宝主界面（TBMainActivity）上继续按返回，所以在那一层停手并重新导航。
     """
     backs = 0
-    for _ in range(7):
-        current = d.app_current()
-        if current.get("package") != TB_APP:
-            print("  已离开淘宝，停止")
-            return False
+    leave_dialogs = 0
+    for _ in range(10):
+        if not taobao_on_top(confirm=TAOBAO_CONFIRM):
+            # 旧逻辑在这里打印「已离开淘宝，停止」并直接结束整轮，
+            # 正是「任务老是自动结束」的主因。现在先恢复淘宝再重新导航。
+            if not recover_taobao_front():
+                return False
+            invalidate_scan()
+            if navigate_to_task_list():
+                return True
+            continue
+        current = d.app_current() or {}
         nodes = read_page()
         if is_task_page(nodes):
             return True
@@ -686,11 +782,13 @@ def back_to_task_page():
             if click_node(reentry[0]):
                 time.sleep(2)
                 continue
-        # ⛔ 淘宝主界面再按返回就是退出 App，这一层必须停手
-        if current.get("activity", "").endswith("TBMainActivity"):
-            print("  已到淘宝主界面，不再按返回（避免退出 App）")
+        # ⛔ 淘宝主界面再按返回就是退出 App：停手，改走重新导航回列表
+        if str(current.get("activity") or "").endswith("TBMainActivity"):
+            print("  已到淘宝主界面，不再按返回，重新导航回任务列表")
+            if navigate_to_task_list():
+                return True
             return False
-        if backs < 4:
+        if backs < 6:
             backs += 1
             press_back()
             time.sleep(1.2)
@@ -698,15 +796,28 @@ def back_to_task_page():
             # 避免把刚做了一半的任务进度作废（即「自动取消进度」）。
             after = read_page()
             if dismiss_leave_dialog(after):
-                # 已选「留在本页」，重新判断当前是不是任务列表；不是就继续退。
                 if is_task_page(after):
                     return True
-                backs -= 1  # 没真正退出去，这一下不算，避免上限被对话框吃光
-                continue
+                leave_dialogs += 1
+                if leave_dialogs <= LEAVE_DIALOG_LIMIT:
+                    # 弹「放弃进度」说明时长还没做够：留在页面继续浏览补时，
+                    # 而不是立刻再按返回（旧逻辑会反复弹框直到循环耗尽 → 结束）。
+                    print(f"  进度未满足，留在页面继续浏览补足时长"
+                          f"（第 {leave_dialogs}/{LEAVE_DIALOG_LIMIT} 次）")
+                    try:
+                        execute_browse_task(d, min_duration=10, max_wait=14)
+                    except Exception:
+                        time.sleep(10)
+                    invalidate_scan()
+                    backs = max(0, backs - 1)
+                    continue
+                print("  已补足浏览时长，允许离开本页")
         else:
-            print("  返回次数已达上限，停止本轮")
+            print("  返回次数已达上限，尝试重新导航回任务列表")
+            if navigate_to_task_list():
+                return True
             return False
-    print("  未能返回淘金币任务列表，停止本轮执行")
+    print("  未能返回淘金币任务列表，本轮交给主循环恢复重试")
     return False
 
 
@@ -801,6 +912,28 @@ def claim_accumulated_reward(nodes):
     return False
 
 
+def recover_task_page():
+    """任务列表失联后的统一恢复：确认淘宝在前台 → 重新导航 → 必要时上滑回列表。"""
+    if not recover_taobao_front():
+        return False
+    for i in range(3):
+        nodes = read_page(force=True)
+        if is_task_page(nodes):
+            print("  ✅ 已恢复金币任务列表，继续执行剩余任务")
+            return True
+        if i == 0:
+            print("  正在重新进入【去赚金币】…")
+        if navigate_to_task_list():
+            nodes = read_page(force=True)
+            if is_task_page(nodes):
+                print("  ✅ 已恢复金币任务列表，继续执行剩余任务")
+                return True
+        scroll_up_to_list()
+        invalidate_scan()
+        time.sleep(1)
+    return is_task_page(read_page(force=True))
+
+
 def run_tasks(max_tasks=30):
     attempts, finished = {}, set()
     confirmed_progress = {}
@@ -809,6 +942,9 @@ def run_tasks(max_tasks=30):
     expand_clicks = 0
     start_coins = None
     last_coins = None
+    recover_fail = 0       # 连续恢复失败次数
+    claim_streak = 0       # 连续领取累计奖励次数，防止一直卡在领取
+    end_reason = f"已达本轮最大执行次数 {max_tasks}"
     while total < max_tasks:
         nodes = read_page()
         if not is_task_page(nodes):
@@ -845,16 +981,27 @@ def run_tasks(max_tasks=30):
                             break
                 else:
                     print(f"  第 {attempt + 1} 次复核仍不是任务列表"
-                          f"（可见 {len(nodes)} 块，前台 {d.app_current().get('package')}）")
+                          f"（可见 {len(nodes)} 块，前台 {_pkg_once()}）")
             if not recovered:
-                print("  当前页面无法确认为金币任务列表，停止")
-                break
+                recover_fail += 1
+                print(f"  页面不是任务列表（第 {recover_fail}/{MAX_RECOVER_FAILURES} 次），"
+                      f"尝试恢复后继续，不会直接结束")
+                if recover_fail >= MAX_RECOVER_FAILURES:
+                    end_reason = "连续多次无法回到金币任务列表"
+                    break
+                if recover_task_page():
+                    recover_fail = 0
+                invalidate_scan()
+                continue
+        recover_fail = 0
         # 每轮先尝试领取「今日累计奖励」（进度满后的额外金币）。
         # 仅当按钮为领取类文案时才点，进度未满的「去完成/做任务」不会误点。
-        if claim_accumulated_reward(nodes):
+        if claim_accumulated_reward(nodes) and claim_streak < 3:
+            claim_streak += 1
             invalidate_scan()
             time.sleep(1.2)
             continue
+        claim_streak = 0
         # ⛔ 不在迭代开头就点「展开」：那样会把列表往下滚，把顶部「每日任务」
         # 整批滚出屏幕、永远做不掉。改成「当前屏幕已无可执行任务」时才展开/下滚，
         # 保证顶部每日任务优先做掉。
@@ -866,6 +1013,7 @@ def run_tasks(max_tasks=30):
         if not tasks:
             empty_times += 1
             if empty_times >= EMPTY_LIMIT:
+                end_reason = "连续多屏没有可执行任务，本轮任务已做完"
                 break
             if not expanded and any(normalize(n["text"]) == "更多专享福利" for n in nodes):
                 expand = [n for n in nodes if normalize(n["text"]) == "展开"
@@ -902,7 +1050,17 @@ def run_tasks(max_tasks=30):
         except Exception as exc:
             print(f"  任务执行异常：{exc}")
         if not back_to_task_page():
-            break
+            recover_fail += 1
+            print(f"  返回任务列表失败（第 {recover_fail}/{MAX_RECOVER_FAILURES} 次），"
+                  f"尝试恢复后继续，不会直接结束")
+            if recover_fail >= MAX_RECOVER_FAILURES:
+                end_reason = "连续多次无法返回金币任务列表"
+                break
+            if recover_task_page():
+                recover_fail = 0
+            invalidate_scan()
+            continue
+        recover_fail = 0
 
         # 优先用「今日速赚」的增量确认到账，其次才看任务行进度
         after_nodes = read_page()
@@ -931,6 +1089,7 @@ def run_tasks(max_tasks=30):
                 attempts[key] = 0
         else:
             print("  未确认进度或到账；同项最多尝试两次")
+    print(f"  [结束原因] {end_reason}")
     print(f"  共尝试 {total} 次，确认完成/进度增长 {confirmed} 次")
     if start_coins is not None and last_coins is not None:
         print(f"  今日速赚：{start_coins} → {last_coins}"

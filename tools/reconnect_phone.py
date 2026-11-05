@@ -151,6 +151,39 @@ def try_endpoint(adb_path, endpoint, stabilize=False) -> bool:
     return False
 
 
+def hotspot_restarts(minutes=10):
+    """读 Windows WLAN 日志，看电脑热点的「承载网络」最近是否被反复停止/启动。
+
+    8008 = 开始停止承载网络，8006 = 已完成启动承载网络。两者成对出现即一次
+    广播中断：这期间 SSID 根本不发射，手机自然「搜不到 WiFi」。返回时间线文本。
+    """
+    if os.name != "nt":
+        return []
+    ps = (
+        "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-WLAN-AutoConfig/Operational';"
+        f"StartTime=(Get-Date).AddMinutes(-{minutes});Id=@(8008,8006)}} "
+        "-ErrorAction SilentlyContinue | Sort-Object TimeCreated | "
+        "ForEach-Object { $_.Id.ToString() + ':' + $_.TimeCreated.ToString('HH:mm:ss') }"
+    )
+    out = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], timeout=20)
+    if out.startswith("ERR ") or not out:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def report_hotspot_restarts():
+    restarts = hotspot_restarts()
+    if not restarts:
+        return
+    stops = sum(1 for r in restarts if r.startswith("8008:"))
+    print(f"[诊断] 电脑热点在最近 10 分钟内被系统重启过约 {stops} 次："
+          f"{', '.join(restarts[-6:])}（8008=停播 / 8006=恢复）")
+    print("  → 停播期间 SSID 不广播，这就是手机「搜不到 WiFi」的原因；"
+          "已连上的手机也会被踢掉且不会自动重连")
+    print("  → 根因通常是电脑的 USB 无线网卡反复掉线重枚举："
+          "换主板后置 USB 口、别用延长线/Hub，清理设备管理器里的残留网卡实例")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default=str(DEFAULT_ADB), help="adb.exe 完整路径")
@@ -202,6 +235,7 @@ def main():
             print("  → 解锁手机，开发者选项 -> 无线调试 关一次再开（端口会刷新）")
         else:
             print("[失败] 热点里找不到手机，手机可能已切到移动数据或断开热点 WiFi")
+    report_hotspot_restarts()
     print("[提示] 最稳的做法：改用 USB 数据线 + 开发者选项「USB 调试」，完全绕开 WiFi")
     return 1
 

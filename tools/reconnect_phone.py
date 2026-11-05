@@ -29,6 +29,14 @@ SCAN_WORKERS = 400
 SOCKET_TIMEOUT = 0.35
 ADB_TIMEOUT = 12
 
+# 手机连「无互联网」的电脑热点时，Android 会判定 WiFi 不可用 → 切移动数据、
+# 锁屏后 WiFi 休眠，而 Android 11+ 锁屏还会直接关掉「无线调试」。这几项能钉住它。
+STABILIZE_SETTINGS = (
+    ("captive_portal_mode", "0", "不再把电脑热点判成「无互联网」而切到移动数据"),
+    ("wifi_sleep_policy", "2", "锁屏时 WiFi 不休眠"),
+    ("stay_on_while_plugged_in", "7", "充电时屏幕常亮，避免锁屏关掉无线调试"),
+)
+
 
 def decode(raw: bytes) -> str:
     for enc in ("utf-8", "gbk"):
@@ -90,6 +98,22 @@ def candidate_ips(prefixes):
     return found
 
 
+def is_alive(ip):
+    """ARP 里可能是过期条目；ping 一下区分「手机在线但无线调试没开」。"""
+    output = run(["ping", "-n", "1", "-w", "600", ip], timeout=3)
+    return "TTL=" in output or "ttl=" in output
+
+
+def stabilize_phone(adb_path, serial):
+    """连上后钉住手机 WiFi/屏幕，减少跑任务途中被系统断掉。"""
+    print("[加固] 正在钉住手机 WiFi，减少热点掉线…")
+    for key, value, why in STABILIZE_SETTINGS:
+        adb(adb_path, "-s", serial, "shell", "settings", "put", "global", key, value)
+        actual = adb(adb_path, "-s", serial, "shell", "settings", "get", "global", key).strip()
+        flag = "" if actual == value else "  [未生效，可能被厂商 ROM 限制]"
+        print(f"  {key} = {actual}  ({why}){flag}")
+
+
 def probe(item):
     ip, port = item
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -107,7 +131,7 @@ def probe(item):
     return None
 
 
-def try_endpoint(adb_path, endpoint) -> bool:
+def try_endpoint(adb_path, endpoint, stabilize=False) -> bool:
     """adb connect 可能返回 0 但实际没连上，必须用 adb devices 复核。"""
     output = adb(adb_path, "connect", endpoint)
     for _ in range(3):
@@ -118,6 +142,8 @@ def try_endpoint(adb_path, endpoint) -> bool:
                 CACHE.write_text(endpoint, encoding="utf-8")
             except Exception:
                 pass
+            if stabilize:
+                stabilize_phone(adb_path, endpoint)
             return True
         time.sleep(0.6)
     first = output.splitlines()[0] if output else "无响应"
@@ -128,16 +154,20 @@ def try_endpoint(adb_path, endpoint) -> bool:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default=str(DEFAULT_ADB), help="adb.exe 完整路径")
+    parser.add_argument("--stabilize", action="store_true",
+                        help="连上后设置手机 WiFi 不休眠/充电常亮，减少途中掉线")
     args = parser.parse_args()
     adb_path = args.adb if os.path.isfile(args.adb) else "adb"
 
     existing = online_devices(adb_path)
     if existing:
         print(f"[OK] 已有可用设备：{existing[0]}，无需重连")
+        if args.stabilize:
+            stabilize_phone(adb_path, existing[0])
         return 0
 
     cached = CACHE.read_text(encoding="utf-8").strip() if CACHE.is_file() else ""
-    if cached and try_endpoint(adb_path, cached):
+    if cached and try_endpoint(adb_path, cached, args.stabilize):
         return 0
 
     prefixes = local_prefixes()
@@ -150,6 +180,8 @@ def main():
     if not ips:
         print("[失败] 热点网段里没发现设备，请确认手机仍连着电脑的移动热点")
         return 1
+    alive = [ip for ip in ips if is_alive(ip)]
+    print(f"[扫描] ping 得通的设备：{alive or '无（可能只是手机不回 ping）'}")
 
     targets = [(ip, port) for ip in ips for port in PORTS]
     print(f"[扫描] 正在查找手机的无线调试端口（{len(targets)} 个，约 20~40 秒）…")
@@ -160,14 +192,17 @@ def main():
                 opened.append(hit)
     print(f"[扫描] 开放端口：{opened[:10]}（共 {len(opened)} 个）")
     for ip, port in opened[:12]:
-        if try_endpoint(adb_path, f"{ip}:{port}"):
+        if try_endpoint(adb_path, f"{ip}:{port}", args.stabilize):
             return 0
 
-    print("[失败] 没找到可用的无线调试连接，请依次检查：")
-    print("  1. 手机连的是【电脑的移动热点】，不是别的 WiFi")
-    print("  2. 手机 开发者选项 -> 无线调试 已打开（关一次再开会刷新端口）")
-    print("  3. 手机已解锁、屏幕亮着")
-    print("  4. 仍不行就改用 USB 数据线 + 「USB 调试」")
+    if not opened:
+        if alive:
+            print("[失败] 手机在线，但没有任何无线调试端口在监听")
+            print("  → Android 11+ 在锁屏、WiFi 切换或判定「无互联网」时会直接关掉「无线调试」")
+            print("  → 解锁手机，开发者选项 -> 无线调试 关一次再开（端口会刷新）")
+        else:
+            print("[失败] 热点里找不到手机，手机可能已切到移动数据或断开热点 WiFi")
+    print("[提示] 最稳的做法：改用 USB 数据线 + 开发者选项「USB 调试」，完全绕开 WiFi")
     return 1
 
 

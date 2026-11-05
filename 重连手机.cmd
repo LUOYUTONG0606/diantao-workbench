@@ -15,7 +15,9 @@ echo ============================================================
 echo   重连手机（无线调试 / 电脑移动热点）
 echo ============================================================
 echo.
-"%PY%" -u "%~dp0tools\reconnect_phone.py" --adb "%ADB%"
+echo 连上后会顺手把手机设成「WiFi 不休眠 / 充电常亮 / 不把热点判成无网」，减少掉线。
+echo.
+"%PY%" -u "%~dp0tools\reconnect_phone.py" --adb "%ADB%" --stabilize
 echo.
 if errorlevel 1 (
     echo [提示] 仍连不上可改用 USB 数据线 + 开发者选项「USB 调试」。

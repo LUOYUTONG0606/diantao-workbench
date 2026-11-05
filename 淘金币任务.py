@@ -39,6 +39,8 @@ EXTERNAL_APP_WORDS = (
     "微博", "闲鱼", "快手", "抖音", "一淘", "淘宝特价版", "特价版", "天猫", "百度",
     "饿了么", "美团", "拼多多", "京东", "唯品会", "高德", "小红书", "b站",
     "下App", "下载App", "安装App", "打开App",
+    # 外部浏览器/App：点了会跳出淘宝，一律跳过不点（如「逛逛uC最高立得」= UC浏览器）
+    "uC", "UC", "UC浏览器", "夸克", "QQ浏览器", "浏览器",
 )
 
 # 标题里看不出目标 App、但实测会跳转的任务，按全名精确屏蔽
@@ -70,7 +72,9 @@ def match_task_type(task_name):
     if is_blocked_boutique_task(task_name) or is_blacklisted(task_name):
         return "skip"
     # 会打开其他 App 的任务：直接跳过，不点
-    if any(word in task_name for word in EXTERNAL_APP_WORDS):
+    # 大小写不敏感：OCR 可能把「uC/UC/uc」读成不同大小写，都用同一规则拦。
+    _name_lower = task_name.lower()
+    if any(word.lower() in _name_lower for word in EXTERNAL_APP_WORDS):
         return "skip"
     if task_name.strip() in EXTERNAL_APP_TITLES:
         return "skip"

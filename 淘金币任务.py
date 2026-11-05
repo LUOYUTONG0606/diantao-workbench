@@ -48,6 +48,13 @@ EXTERNAL_APP_TITLES = (
     "逛一逛领购物红包",   # 天猫
 )
 
+# 用户明确要求做的「顶部每日任务」：即便名字里带默认屏蔽词（课堂/蚂蚁等）也强制放行。
+# 只放行以下明确点名的任务，不波及同类的其他屏蔽项（如蚂蚁森林仍跳过）。
+ALLOW_DAILY_TASKS = (
+    "淘金币趣味课堂",   # 名字含「课堂」，但属于每日任务，要做
+    "蚂蚁庄园",         # 名字含「蚂蚁」，用户要求做的每日任务
+)
+
 # 「搜一搜」类任务要先在搜索框输入关键词再浏览，否则不算完成。
 # 轮换使用，避免每次搜同一个词太像脚本。
 SEARCH_TERMS = ("固态硬盘", "移动硬盘", "蓝牙耳机", "牙刷", "纸巾", "牛肉干")
@@ -69,6 +76,10 @@ def task_key(task):
 
 def match_task_type(task_name):
     """未知任务不默认执行，保留商品三次点击任务的统一屏蔽规则。"""
+    # 用户点名要做的每日任务：放行白名单优先于一切屏蔽词（课堂/蚂蚁等）。
+    # 蚂蚁庄园若真跳到支付宝，exec_task 的包名兜底会自动退回，不会卡在外部 App。
+    if any(kw in task_name for kw in ALLOW_DAILY_TASKS):
+        return "browse"
     if is_blocked_boutique_task(task_name) or is_blacklisted(task_name):
         return "skip"
     # 会打开其他 App 的任务：直接跳过，不点

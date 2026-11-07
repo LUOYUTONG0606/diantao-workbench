@@ -46,28 +46,29 @@ COLLAPSE_TEXTS = ("收起", "收拢")
 # 任务行右侧出现这些文字 = 这项今天已经做完了，直接跳过做下一个，
 # 避免「+N」奖励图标或每日标签仍可点时把已完成的任务重复做一遍。
 DONE_ROW_TEXTS = ("已完成", "已领取", "已领完", "今日已完成", "明日再来", "明天再来")
-MAX_EXPAND_CLICKS = 2   # 本轮最多展开两次；已展开状态显示「收起」，必须排除
+# 折叠区可能有多层；而且页面退回活动主页再进来时折叠状态会重置，
+# 本轮累计次数并不等于「当前还有几层没展开」，所以上限放宽、看到就点。
+MAX_EXPAND_CLICKS = 6
+EXPAND_RETRY_GAP = 6.0  # 同一位置的展开按钮 6s 内不重复点，避免点了没效果时空转
+_last_expand = {"pos": None, "at": 0.0}
 # 浏览/观看类任务的最长时长上限（秒）。使用者要求浏览最长 30s。
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
 # 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
 BROWSE_CAP = 30
-# ── 弹窗关闭 ────────────────────────────────────────────
-# 真机实测：「充值大礼包 / 首充礼包」这类全屏浮层只给一个底部居中的「X」
-# （1260x2800 屏上 x=633, y=2111）和顶部「跳过」。旧关键词表不认，弹窗
-# 会整屏盖住任务列表 → OCR 每屏都读不到任务行 →「可执行 0 个任务」空转。
-# 使用者要求：看到这种弹窗点 X 关掉即可，绝不点「一键领取 / 去完成」。
+# ── 弹窗关闭（只在「点进任务之后」生效） ──────────────────
+# 真机实测：「充值大礼包 / 首充礼包」这类浮层给一个底部居中的「X」
+# （1260x2800 屏上 x=633, y=2111）和顶部「跳过」。
+# 使用者明确：不要什么弹窗都关 —— 只有「开始做任务、点进去之后」出现弹窗
+# 才关；任务列表扫描 / 导航 / 页面恢复阶段一律不碰（见 exec_task 调用处）。
 POPUP_X_TEXTS = ("X", "x", "×", "✕", "✖", "✗", "✘", "╳")
 POPUP_CLOSE_TEXTS = (
     "跳过", "跳过广告", "关闭", "关闭弹窗", "我知道了", "知道了",
     "稍后再说", "暂不", "以后再说", "不再提示", "开心收下", "收下", "开心领取",
 )
-# 只有「屏上有明显弹窗文案」时，才允许点不在底部居中位置的 X（如右上角 X），
-# 避免把任务列表里商品卡片上的小叉误当弹窗关闭键。
-POPUP_HINT_WORDS = (
-    "礼包", "首充", "一键领取", "点击继续", "恭喜", "红包", "签到成功",
-    "限时", "专属福利", "活动规则", "马上开启", "开心收下", "再领",
-)
-MAX_POPUP_DISMISS = 3   # 连续点同一个关闭键仍无效就停手，避免空转
+# ⚠️ 使用者明确要求：不要在任务列表/导航阶段「见 X 就点」。
+# 实测被误点的是列表页右上角小叉 (x=1171, y=361)，那是正常控件；
+# 因此只认「底部居中的 X」（真机弹窗位置），右上角/其他位置一律不碰。
+MAX_POPUP_DISMISS = 2   # 点进任务后最多连关两个浮层
 _popup_clicks = {"pos": None, "count": 0, "at": 0.0}
 
 # ── 快速档：把散落的固定等待集中管理 ──────────────────
@@ -336,11 +337,12 @@ def read_page(force=False):
 
 
 def dismiss_notice(nodes):
-    """关掉盖在金币任务列表上的弹窗/浮层，优先点「X」。
+    """关掉「点进任务之后」出现的弹窗/浮层，优先点底部居中的「X」。
 
+    ⚠️ 调用时机由调用方保证：只在 exec_task 点进任务后（以及领奖/答完题后）
+    调用；任务列表扫描、导航、恢复阶段一律不调用，避免误关正常控件。
     只点关闭类控件，绝不点「一键领取 / 去完成」这类会跳业务页的按钮；
-    「放弃进度」对话框一律交给 dismiss_leave_dialog 选「留在页面」，
-    这里的 X 有可能是「确认离开」，绝不碰。
+    「放弃进度」对话框交给 dismiss_leave_dialog 选「留在页面」，绝不碰。
     """
     if not nodes:
         return False
@@ -353,17 +355,9 @@ def dismiss_notice(nodes):
     if xs:
         def ratio(n):
             return n["cx"] / W, n["cy"] / H
-        # 弹窗底部居中的关闭 X（最常见，本次真机就是这个位置）
-        bottom = [n for n in xs
-                  if .28 <= ratio(n)[0] <= .72 and ratio(n)[1] >= .55]
-        candidates = bottom
-        if not candidates:
-            evidence = any(any(w in normalize(n["text"]) for w in POPUP_HINT_WORDS)
-                           for n in nodes)
-            if evidence:
-                top_right = [n for n in xs
-                             if ratio(n)[0] >= .78 and ratio(n)[1] <= .32]
-                candidates = top_right or xs
+        # 只认弹窗底部居中的关闭 X；右上/侧边的小叉是列表页正常控件，绝不点。
+        candidates = [n for n in xs
+                      if .28 <= ratio(n)[0] <= .72 and ratio(n)[1] >= .55]
         if candidates:
             target = max(candidates,
                          key=lambda n: (n["cy"], -abs(n["cx"] - W // 2)))
@@ -567,8 +561,6 @@ def navigate_to_task_list():
         if not nodes:
             time.sleep(SETTLE_PAGE)
             continue
-        if dismiss_notice(nodes):
-            continue
         if is_task_page(nodes):
             print("  已进入淘金币任务列表")
             return True
@@ -719,8 +711,18 @@ def exec_task(task_def):
 
     if kind in ("claim", "visit"):
         return True
+    # ✅ 只有「点进任务之后」才处理弹窗：列表页/导航阶段一律不碰。
+    # 每个任务独立重置连点计数；最多连关两个浮层（有的任务会连弹两层）。
+    # 只有真的关掉才多一次 OCR，没有弹窗时不增加耗时。
+    _popup_clicks.update(pos=None, count=0, at=0.0)
+    landed = read_page(force=True)
+    for _ in range(MAX_POPUP_DISMISS):
+        if not dismiss_notice(landed):
+            break
+        invalidate_scan()
+        time.sleep(SETTLE_PAGE)
+        landed = read_page(force=True)
     # 外部跳转不滑动；返回和到账检查统一由主循环负责。
-    landed = read_page()
     if not landed or is_task_page(landed):
         return False
     seconds = fresh[0]["seconds"]
@@ -993,6 +995,18 @@ def find_expand_button(nodes):
     return cands[-1]
 
 
+def expand_button_ready(node):
+    """同一位置的【展开】刚点过就先跳过，防止页面没展开时反复点同一处。"""
+    pos = (int(node["cx"]) // 20, int(node["cy"]) // 20)
+    return not (_last_expand["pos"] == pos
+                and time.monotonic() - _last_expand["at"] < EXPAND_RETRY_GAP)
+
+
+def mark_expand(node):
+    _last_expand["pos"] = (int(node["cx"]) // 20, int(node["cy"]) // 20)
+    _last_expand["at"] = time.monotonic()
+
+
 def at_list_top(nodes):
     """是否已经回到金币任务列表顶部（顶部锚点可见）。"""
     texts = [normalize(n["text"]) for n in nodes]
@@ -1089,7 +1103,6 @@ def run_tasks(max_tasks=30):
     last_coins = None
     recover_fail = 0       # 连续恢复失败次数
     claim_streak = 0       # 连续领取累计奖励次数，防止一直卡在领取
-    popup_streak = 0       # 连续关闭弹窗次数，防止点了没效果时空转
     sweep_empty = 0        # 连续「完整遍历都没有任务」的轮数
     still_screens = 0      # 连续读到相同文字块的屏数（到底判定）
     last_signature = None
@@ -1108,15 +1121,8 @@ def run_tasks(max_tasks=30):
 
     while total < max_tasks:
         nodes = read_page()
-        # 弹窗会整屏盖住任务列表：每轮扫描前先关掉再解析，否则读到的全是
-        # 弹窗文案，每屏都判「可执行 0 个任务」并一路空转到底。
-        if popup_streak < MAX_POPUP_DISMISS and dismiss_notice(nodes):
-            popup_streak += 1
-            if popup_streak == MAX_POPUP_DISMISS:
-                print("  [提示] 已连续关闭 3 次弹窗，先按正常流程继续扫描")
-            invalidate_scan()
-            time.sleep(SETTLE_PAGE)
-            continue
+        # ⛔ 这里绝不关弹窗：任务列表页上的 X 是正常控件（实测误点过
+        # x=1171,y=361 的右上小叉）。弹窗只在「点进任务之后」处理。
         if not is_task_page(nodes):
             # 这里的金币任务列表会自己退回淘金币活动主页（实测约 4 秒后），
             # 所以不能只是等待：发现退回就重新点一次「去赚金币」再进。
@@ -1127,10 +1133,6 @@ def run_tasks(max_tasks=30):
                 if is_task_page(nodes):
                     recovered = True
                     break
-                try:
-                    dismiss_notice(nodes)
-                except Exception:
-                    pass
                 # 先往上滚一下：滑进商品流时任务行会离开视口，误判成「不在列表」
                 swipe(screen_width // 2, int(screen_height * .35),
                       screen_width // 2, int(screen_height * .8), duration=.3)
@@ -1161,6 +1163,8 @@ def run_tasks(max_tasks=30):
                     break
                 if recover_task_page():
                     recover_fail = 0
+                    # 重新导航进列表 → 折叠区又收起了，累计次数不能再拦着
+                    expand_clicks = 0
                 invalidate_scan()
                 continue
         recover_fail = 0
@@ -1196,14 +1200,18 @@ def run_tasks(max_tasks=30):
                     scroll_up_to_list()
                     invalidate_scan()
                     continue
-                # ★ 折叠区里还有一批任务：当前屏没可做的了就点【展开】。
-                # 顶部每日任务此时已优先做完，展开不会把它们饿死。
-                # 第一次展开要趁早（看到按钮就点），不再等「扫到底」。
-                if expand_clicks == 0:
+                # ★ 只要屏上还看得到【展开】就立刻点（常在右下角）。
+                # 旧逻辑只在「本轮第一次」趁早点，之后必须等扫到底才点：
+                # 实测页面退回活动主页再进来后折叠区重新收起，却因计数已是 1
+                # 连扫 11 屏都不点。折叠区可能多层，不再用次数限制触发时机。
+                if expand_clicks < MAX_EXPAND_CLICKS:
                     expand_btn = find_expand_button(nodes)
-                    if expand_btn and click_node(expand_btn):
+                    if (expand_btn and expand_button_ready(expand_btn)
+                            and click_node(expand_btn)):
+                        mark_expand(expand_btn)
                         expand_clicks += 1
-                        print(f"  点击【{normalize(expand_btn['text'])}】，展开更多任务")
+                        print(f"  点击【{normalize(expand_btn['text'])}】，展开更多任务"
+                              f"（第 {expand_clicks}/{MAX_EXPAND_CLICKS} 次）")
                         # 展开会重排页面，等切换完成；随后直接回主循环重新解析。
                         # 绝不在这里回顶部，否则刚展开出来的任务又被滚走。
                         for _ in range(4):
@@ -1235,7 +1243,9 @@ def run_tasks(max_tasks=30):
                 # 扫到底了：若还有未展开的折叠区，再点一次并继续扫，别急着回顶
                 if expand_clicks < MAX_EXPAND_CLICKS:
                     expand_btn = find_expand_button(nodes)
-                    if expand_btn and click_node(expand_btn):
+                    if (expand_btn and expand_button_ready(expand_btn)
+                            and click_node(expand_btn)):
+                        mark_expand(expand_btn)
                         expand_clicks += 1
                         print(f"  再点【{normalize(expand_btn['text'])}】"
                               f"（第 {expand_clicks}/{MAX_EXPAND_CLICKS} 次展开）")
@@ -1251,12 +1261,14 @@ def run_tasks(max_tasks=30):
                 # 回顶部完整重扫。收工前必须已经展开过，否则宁可多扫几轮，
                 # 也不能把折叠区里没露出来的任务漏掉。
                 sweep_empty += 1
-                if sweep_empty >= SWEEP_LIMIT and expand_clicks >= 1:
+                if (sweep_empty >= SWEEP_LIMIT and expand_clicks >= 1
+                        and not find_expand_button(nodes)):
                     end_reason = (f"已展开 {expand_clicks} 次，连续 {sweep_empty} 轮"
                                   f"「顶部→底部→回顶部」完整遍历都没有可执行任务，本轮任务已做完")
                     break
                 if sweep_empty >= SWEEP_LIMIT * 2:
-                    end_reason = (f"始终没找到【展开】按钮，已完整遍历 {sweep_empty} 轮，停止"
+                    end_reason = (f"已展开 {expand_clicks} 次、完整遍历 {sweep_empty} 轮，"
+                                  f"屏上仍有【展开】或没有可执行任务，停止"
                                   f"（请确认手机停在淘金币任务列表）")
                     break
                 print(f"  已扫到列表底部，回到顶部重新遍历（第 {sweep_empty + 1} 轮，"
@@ -1271,7 +1283,6 @@ def run_tasks(max_tasks=30):
         still_screens = 0
         last_signature = None
         sweep_empty = 0
-        popup_streak = 0     # 能正常解析到任务了，关闭计数归零
         task = tasks[0]
         key = task_key(task)
         # 浏览/观看类任务：要求的真实时长超过上限就直接跳过，不进入、不截断。

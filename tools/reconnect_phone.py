@@ -26,6 +26,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -293,6 +294,54 @@ def powershell(script, timeout=90):
                 "-EncodedCommand", encoded], timeout)
 
 
+def powershell_stream(script, timeout=110):
+    """同 powershell()，但把输出逐行实时打印。
+
+    关开热点要 10~30 秒，用 subprocess.run 会整段静默，用户会以为脚本卡死
+    或「根本没关热点」；这里让 STATE_BEFORE / STOP / REACHED_OFF / START /
+    FINAL 一行一行出现在任务日志里，同时仍返回完整文本供上层解析。
+    """
+    if os.name != "nt":
+        return ""
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    chunks = []
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", bufsize=1)
+    except OSError as exc:
+        return f"ERR {exc}"
+
+    def _kill_when_stuck():
+        try:
+            if proc.poll() is None:
+                proc.kill()
+                print("  ⚠ 热点开关脚本超时，已强制结束", flush=True)
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(timeout, _kill_when_stuck)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            chunks.append(line)
+            print("  " + line, flush=True)
+        proc.wait()
+    except Exception as exc:
+        chunks.append(f"ERR {exc}")
+    finally:
+        watchdog.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+    return "\n".join(chunks)
+
+
 def hotspot_state():
     out = powershell(HOTSPOT_STATE_PS, timeout=25)
     hit = re.search(r"^STATE=(\w+)", out, re.M)
@@ -333,15 +382,11 @@ def toggle_hotspot(force=False):
     if not force and hotspot_cooldown_active():
         return False
     if force:
-        print("[热点] 任务启动时检测不到设备，忽略冷却，电脑移动热点关一次再开…")
+        print("[热点] 任务启动时检测不到设备，忽略冷却，电脑移动热点关一次再开…", flush=True)
     else:
-        print("[热点] 手机连接掉了，电脑移动热点关一次再开…")
-    out = powershell(HOTSPOT_PS, timeout=110)
-    for line in out.splitlines():
-        if line.startswith(("STATE_BEFORE=", "STOP=", "REACHED_OFF=", "START=",
-                            "RETRY=", "STATE_FINAL=", "SSID=", "ERR=",
-                            "NO_INTERNET_PROFILE", "FINAL=")):
-            print("  " + line)
+        print("[热点] 手机连接掉了，电脑移动热点关一次再开…", flush=True)
+    print("[热点] 正在关闭再打开（约 10~30 秒），下面会实时显示每一步…", flush=True)
+    out = powershell_stream(HOTSPOT_PS, timeout=110)
     hit = re.search(r"^FINAL=(\w+)", out, re.M)
     state = hit.group(1) if hit else "Unknown"
     if state != "On":
@@ -420,33 +465,64 @@ def main():
 
     existing = online_devices(adb_path)
     if existing:
-        print(f"[OK] 已有可用设备：{existing[0]}，无需重连，也不会动热点")
+        print(f"[OK] 已有可用设备：{existing[0]}，无需重连，也不会动热点", flush=True)
         if args.stabilize:
             stabilize_phone(adb_path, existing[0])
         return 0
 
+    print("[重连] adb 里没有任何设备，开始自动找回手机…", flush=True)
     cached = CACHE.read_text(encoding="utf-8").strip() if CACHE.is_file() else ""
-    if cached and try_endpoint(adb_path, cached, args.stabilize):
-        return 0
+    if cached:
+        print(f"[重连] 先试上次成功的地址 {cached}（约 1~12 秒）…", flush=True)
+        if try_endpoint(adb_path, cached, args.stabilize):
+            return 0
 
     prefixes = local_prefixes()
     ips = candidate_ips(prefixes)
     if cached and cached.split(":")[0] not in ips:
         ips.insert(0, cached.split(":")[0])
+    print(f"[重连] 本机网段 {prefixes or '未知'}，候选手机 IP {ips or '无'}", flush=True)
 
-    # 热点网段里一个客户端都没有 = 手机被停播踢掉了。这时扫端口纯属浪费 30 秒，
-    # 直接先修热点，再扫一次。
-    if not ips:
-        print("[扫描] 热点网段里没有设备，手机可能已被热点停播踢掉")
-        connected, alive, opened = False, [], False
-    else:
-        connected, alive, opened = scan_and_connect(
-            adb_path, prefixes, cached, args.stabilize, ips=ips, label="第 1 次扫描")
-        if connected:
-            return 0
+    connected, alive, opened = False, [], False
+    hotspot_done = False
+    hotspot_attempted = False   # 每次运行最多关开一次，失败也不重试
 
-    # ---- 手机连接掉了：电脑热点关一次再开，再重扫一遍（每次运行最多一次） ----
-    if not args.no_hotspot and toggle_hotspot(force=args.force_hotspot):
+    # ── 任务启动阶段（--force-hotspot）：先关开热点，再去扫端口 ──
+    # 旧顺序是「先扫 2 万个端口（20~40s）→ 全失败才关热点」，前面几十秒日志
+    # 一片空白，用户会以为脚本没关热点、甚至中途点停止把重连进程整棵树杀掉，
+    # 结果热点永远没被关过（.runtime/hotspot_restart.ts 都不存在）。
+    # 启动阶段用户要的就是「没设备就重新开关一次热点」，所以把它提到最前面，
+    # 关开过程还逐行实时输出，几秒内就能在 Windows 热点磁贴上看到变化。
+    if args.force_hotspot and not args.no_hotspot:
+        print("[启动自愈] 没检测到设备 → 现在就关开一次电脑移动热点…", flush=True)
+        hotspot_attempted = True
+        hotspot_done = toggle_hotspot(force=True)
+        if hotspot_done:
+            back = wait_phone_back(prefixes, ips)
+            rescan_ips = back or ips
+            connected, alive, opened = scan_and_connect(
+                adb_path, prefixes, "", args.stabilize, ips=rescan_ips,
+                label="热点重启后扫描")
+            if connected:
+                return 0
+        else:
+            print("  ⚠ 热点没能关开成功，继续按常规方式扫描端口", flush=True)
+
+    # 常规流程：热点已优先关开过就不再重复扫描，否则先扫一次端口。
+    if not connected and not (args.force_hotspot and hotspot_done):
+        if not ips:
+            print("[扫描] 热点网段里没有设备，手机可能已被热点停播踢掉", flush=True)
+            connected, alive2, opened2 = False, [], False
+        else:
+            connected, alive2, opened2 = scan_and_connect(
+                adb_path, prefixes, cached, args.stabilize, ips=ips, label="端口扫描")
+            if connected:
+                return 0
+        alive = alive2 or alive
+        opened = opened or opened2
+
+    # 运行期守护：扫描失败后才关开热点再重扫（每次运行最多关开一次）。
+    if not connected and not args.no_hotspot and not hotspot_attempted and toggle_hotspot():
         back = wait_phone_back(prefixes, ips)
         rescan_ips = back or ips
         connected, alive2, opened2 = scan_and_connect(
@@ -454,8 +530,7 @@ def main():
             label="热点重启后重扫")
         if connected:
             return 0
-        if alive2:
-            alive = alive2
+        alive = alive2 or alive
         opened = opened or opened2
 
     if not opened:

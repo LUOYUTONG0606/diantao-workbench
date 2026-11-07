@@ -37,6 +37,8 @@ SEQUENCES: dict[str, int] = {}
 EXIT_CODES: dict[str, int] = {}
 GUARD_RUN_ID = None
 RUNTIME = ROOT / ".runtime" / "workbench"
+WATCH_SCRIPT = ROOT / "tools" / "watch_phone.py"
+WATCH_STOP_FLAG = ROOT / ".runtime" / "watch_phone.stop"
 LOG_LOCK = threading.Lock()
 TASK_LOCK = threading.Lock()
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -85,6 +87,40 @@ def read_output(task_id: str, process: subprocess.Popen):
         code = process.wait()
         EXIT_CODES[task_id] = code
         append_log(task_id, f"[结束] 退出码 {code}")
+        # 所有任务都结束后，让工作台自己拉起的连接守护退出，避免残留进程
+        try:
+            if not any(status(key)["status"] == "running" for key in list(PROCESSES)):
+                WATCH_STOP_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                WATCH_STOP_FLAG.write_text("stop", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def ensure_phone_guard(python: Path, env: dict):
+    """工作台直接 Popen 任务脚本，不会经过「启动淘金币.cmd」，这里补上守护。
+
+    守护自带单实例锁：cmd 已经起过时这里会秒退，不会两个进程同时关开热点。
+    守护起不来也不影响任务主流程——select_device() 里还有启动阶段的自愈。
+    """
+    if not WATCH_SCRIPT.is_file():
+        return
+    adb = env.get("DIANTAO_ADB_PATH", "").strip() or str(
+        ROOT / ".vendor" / "platform-tools" / "adb.exe")
+    guard_env = dict(env)
+    guard_env.pop("PYTHONPATH", None)
+    try:
+        WATCH_STOP_FLAG.unlink()
+    except OSError:
+        pass
+    try:
+        subprocess.Popen(
+            [str(python), "-u", str(WATCH_SCRIPT), "--adb", adb],
+            cwd=ROOT, env=guard_env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=NO_WINDOW,
+        )
+    except OSError:
+        pass
 
 
 def stop_process(task_id: str):
@@ -206,6 +242,7 @@ def start_task(task_id: str):
         env = os.environ.copy()
         env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
         RUNTIME.mkdir(parents=True, exist_ok=True)
+        ensure_phone_guard(python, env)
         if task_id == "diantao-all-in-one" and status("diantao-work-guard")["status"] != "running":
             guard_task = require_task("diantao-work-guard")
             launch_process("diantao-work-guard", guard_task, python, env, is_guard=True)

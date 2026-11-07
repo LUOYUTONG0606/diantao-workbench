@@ -8,6 +8,7 @@ import os
 import cv2
 import numpy as np
 import subprocess
+import threading
 from datetime import datetime
 import traceback
 import uiautomator2 as u2
@@ -523,11 +524,96 @@ def get_connected_devices():
         return []
 
 
+# ── 启动阶段自动找回手机（工作台直接 Popen 任务脚本时不经过 启动淘金币.cmd） ──
+RECONNECT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "tools", "reconnect_phone.py")
+_RECOVER_ATTEMPTED = False
+
+
+def _console_python():
+    """pythonw 没有 stdout，子进程输出拿不到；换成同目录的 python.exe。"""
+    exe = sys.executable
+    if os.path.basename(exe).lower() == "pythonw.exe":
+        candidate = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return exe
+
+
+def recover_phone_connection():
+    """检测不到设备时自动重连无线调试，并把电脑移动热点关一次再开。
+
+    工作台是直接 Popen 任务脚本的，不会执行「启动淘金币.cmd」里的重连步骤；
+    放在 select_device() 里才能保证工作台 / 命令行 / 任何调用方都覆盖到。
+    子进程输出实时转发到任务日志，5 分钟硬超时防止 PowerShell 卡死。
+    可用环境变量 DIANTAO_NO_AUTO_RECONNECT=1 关闭。
+    """
+    global _RECOVER_ATTEMPTED
+    if _RECOVER_ATTEMPTED:
+        return False
+    _RECOVER_ATTEMPTED = True
+    if os.environ.get("DIANTAO_NO_AUTO_RECONNECT", "").strip().lower() in ("1", "true", "yes"):
+        print("  （自动重连已由 DIANTAO_NO_AUTO_RECONNECT 禁用）", flush=True)
+        return False
+    if not os.path.isfile(RECONNECT_SCRIPT):
+        print("  ⚠ 找不到 tools/reconnect_phone.py，无法自动重连手机", flush=True)
+        return False
+
+    print("  ⚠ 未检测到已连接的安卓设备 → 自动重连手机，并把电脑热点关一次再开…", flush=True)
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)  # 跨 venv 子进程不能继承宿主的包搜索路径
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    command = [_console_python(), "-u", RECONNECT_SCRIPT,
+               "--adb", ADB_PATH, "--stabilize", "--force-hotspot"]
+    try:
+        proc = subprocess.Popen(
+            command, cwd=os.path.dirname(os.path.dirname(RECONNECT_SCRIPT)),
+            env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            creationflags=flags,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"  ⚠ 自动重连启动失败：{exc}", flush=True)
+        return False
+
+    def _kill_when_stuck():
+        try:
+            if proc.poll() is None:
+                proc.kill()
+                print("  ⚠ 自动重连超过 5 分钟，已强制结束", flush=True)
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(300, _kill_when_stuck)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\r\n")
+            if line.strip():
+                print("  │ " + line, flush=True)
+        proc.wait()
+    finally:
+        watchdog.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+    print(f"  [自动重连] 退出码 {proc.returncode}；重新检查设备…", flush=True)
+    return bool(get_connected_devices())
+
+
 def select_device():
-    """从已连接的设备中，返回用户选中的设备序列号"""
+    """从已连接的设备中，返回用户选中的设备序列号（没设备时先自动重连并关开热点）"""
     devices = get_connected_devices()
+    if not devices and recover_phone_connection():
+        devices = get_connected_devices()
     if not devices:
-        raise Exception("未检测到任何连接的安卓设备")
+        raise Exception(
+            "未检测到任何连接的安卓设备（已自动重连并关开一次电脑热点仍未连上；"
+            "请解锁手机、确认手机连的是电脑热点 WiFi，并把「开发者选项 → 无线调试」关一次再开）")
     # 优先选择普通 ADB TCP 连接（排除 TLS 无线调试的 mDNS 地址）
     preferred = [d for d in devices if "_adb-tls" not in d and ".tcp" not in d.split("_")[-1:]]
     usable = preferred if preferred else devices

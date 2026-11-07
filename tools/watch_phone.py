@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -24,6 +25,26 @@ LOG = ROOT / ".runtime" / "watch_phone.log"
 RECONNECT = ROOT / "tools" / "reconnect_phone.py"
 CONSOLE_PY = ROOT / "workbench" / ".venv" / "Scripts" / "python.exe"
 DEFAULT_ADB = ROOT / ".vendor" / "platform-tools" / "adb.exe"
+LOCK_ADDR = ("127.0.0.1", 47831)
+_LOCK_SOCKET = None
+
+
+def acquire_single_instance():
+    """用本机端口做进程锁：cmd 与工作台可能都想起守护，只留一个。
+
+    持有 socket 直到进程退出，第二个实例 bind 失败即秒退，
+    避免两个守护同时把电脑热点开来开去。
+    """
+    global _LOCK_SOCKET
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(LOCK_ADDR)
+        sock.listen(1)
+    except OSError:
+        sock.close()
+        return False
+    _LOCK_SOCKET = sock
+    return True
 
 
 def log(message):
@@ -77,6 +98,9 @@ def main():
     parser.add_argument("--max-minutes", type=int, default=120, help="最长守护时长，兜底防残留")
     args = parser.parse_args()
     adb_path = args.adb if os.path.isfile(args.adb) else "adb"
+    if not acquire_single_instance():
+        log("已有手机连接守护在运行，本实例退出（避免两个守护同时开关热点）")
+        return 0
     try:
         STOP_FLAG.unlink()
     except FileNotFoundError:

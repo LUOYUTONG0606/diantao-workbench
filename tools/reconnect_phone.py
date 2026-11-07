@@ -320,17 +320,22 @@ def mark_hotspot_restart():
         pass
 
 
-def toggle_hotspot():
+def toggle_hotspot(force=False):
     """把电脑移动热点关一次再开。返回最终是否确实回到 On（广播中）。
 
     安全性：只有当前 On 才 Stop；Start 失败会再试一次；仍失败则重启 icssvc
     并复核状态。无论结果如何都写冷却时间戳，避免反复把热点开来开去。
+    force=True 用于「任务启动时一台设备都没有」：忽略 120s 冷却（那是给
+    运行期守护防抖用的），但仍保持每次运行最多一次、且必须回到 On。
     """
     if os.name != "nt":
         return False
-    if hotspot_cooldown_active():
+    if not force and hotspot_cooldown_active():
         return False
-    print("[热点] 手机连接掉了，电脑移动热点关一次再开…")
+    if force:
+        print("[热点] 任务启动时检测不到设备，忽略冷却，电脑移动热点关一次再开…")
+    else:
+        print("[热点] 手机连接掉了，电脑移动热点关一次再开…")
     out = powershell(HOTSPOT_PS, timeout=110)
     for line in out.splitlines():
         if line.startswith(("STATE_BEFORE=", "STOP=", "REACHED_OFF=", "START=",
@@ -408,6 +413,8 @@ def main():
                         help="连上后设置手机 WiFi 不休眠/充电常亮，减少途中掉线")
     parser.add_argument("--no-hotspot", action="store_true",
                         help="连不上时不自动关开电脑热点（默认会自动开关一次）")
+    parser.add_argument("--force-hotspot", action="store_true",
+                        help="任务启动阶段使用：忽略 120s 冷却，连不上必定关开一次热点（每次运行仍最多一次）")
     args = parser.parse_args()
     adb_path = args.adb if os.path.isfile(args.adb) else "adb"
 
@@ -439,7 +446,7 @@ def main():
             return 0
 
     # ---- 手机连接掉了：电脑热点关一次再开，再重扫一遍（每次运行最多一次） ----
-    if not args.no_hotspot and toggle_hotspot():
+    if not args.no_hotspot and toggle_hotspot(force=args.force_hotspot):
         back = wait_phone_back(prefixes, ips)
         rescan_ips = back or ips
         connected, alive2, opened2 = scan_and_connect(

@@ -1123,12 +1123,14 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     start = time.time()
 
     # ── 自动适配短任务（30秒以内）的追加时间 ──
-    # 如果 min_duration <= 30s 或 detected <= 30s，额外加 10s 而非 5s
+    # 旧逻辑对 <=30s 任务一律 +10s，实测把 15s 任务拖成 25s，是整轮最慢的一环。
+    # 快速档改为 +4s；模式B 会在浏览中周期性检测「完成/领取」提示，
+    # 页面提前判定完成就立刻收工，既提速又不会少做。
     effective_extra = extra_seconds
     task_ref_duration = min_duration if min_duration > 0 else 999
     if task_ref_duration <= 30:
-        effective_extra = max(extra_seconds, 10)
-        print(f"  ⏱️ 检测到30秒短任务，追加保险时间 {effective_extra}s")
+        effective_extra = 4
+        print(f"  ⏱️ 短任务保险时间 {effective_extra}s（快速档）")
 
     # 立即下滑一次，不等页面扫描
     swipe_x = int(sw * 0.5)
@@ -1138,7 +1140,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
         device.swipe(swipe_x, s_y, swipe_x, e_y, duration=0.3)
     except:
         pass
-    time.sleep(1.5)
+    time.sleep(0.8)
 
     # 再检测"滑动浏览XX秒"字样，兼容"秒"字未被控件树收录
     nodes = scan_page(device)
@@ -1151,7 +1153,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
             detected_sec = int(match.group(1))
             # 滑动文本检测到 <= 30s 也自动追加 10s
             if detected_sec <= 30:
-                effective_extra = max(extra_seconds, 10)
+                effective_extra = 4
             has_sliding_text = True
             # 页面倒计时可能已减少，不能覆盖调用方要求的最低时长。
             sliding_min_seconds = max(min_duration, detected_sec) + effective_extra
@@ -1226,7 +1228,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
                 time.sleep(0.5)
         
         print(f"  ⏰ 浏览超时 ({max_wait}s)，共滑动{swipe_count}次")
-        time.sleep(1)
+        time.sleep(0.2)
         return False
     
     # 模式B：未检测到滑动字样，按固定时长下滑浏览 + 实时完成检测
@@ -1234,29 +1236,23 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
         # 页面加载和首次扫描耗时不抵扣实际浏览；保险时间也必须计入。
         fixed_duration = min_duration + effective_extra
         browse_start = time.time()
-        print(f"  📋 未检测到滑动字样，按固定时长 {fixed_duration} 秒浏览（任务 {min_duration}s + 保险 {effective_extra}s）...")
+        # 旧逻辑把「完成提示」检测写在 >= fixed_duration 之后，等于永远等满才查，
+        # 是死代码。改为达到任务最低时长后每 5s 查一次，页面提前判定完成就收工。
+        next_hint_check = browse_start + max(min_duration, 5) - 1
+        print(f"  📋 未检测到滑动字样，按最长 {fixed_duration} 秒浏览（任务 {min_duration}s + 保险 {effective_extra}s）...")
         while time.time() - browse_start < fixed_duration and time.time() - start < max_wait:
             elapsed = int(time.time() - start)
-            # 实时检测完成提示
-            try:
-                if time.time() - browse_start >= fixed_duration and has_ocr_text(
-                    device, ["恭喜完成任务", "恭喜完成", "任务完成", "获得奖励"],
-                    attempts=1,
-                ):
-                    print(f"  ✅ 检测到完成提示！(已过{elapsed}s)")
-                    for _ in range(4):
-                        swipe_count += 1
-                        s_y = random.randint(int(sh * 0.15), int(sh * 0.25))
-                        e_y = random.randint(int(sh * 0.65), int(sh * 0.75))
-                        try:
-                            device.swipe(swipe_x, s_y, swipe_x, e_y, duration=0.3)
-                        except:
-                            pass
-                        time.sleep(0.5)
-                    time.sleep(1)
-                    return True
-            except:
-                pass
+            now = time.time()
+            if now >= next_hint_check and now - browse_start >= min_duration:
+                next_hint_check = now + 5
+                try:
+                    hint_nodes = scan_page(device)
+                    if any(k in n["text"] for n in hint_nodes
+                           for k in ("恭喜完成任务", "恭喜完成", "任务完成", "获得奖励")):
+                        print(f"  ✅ 页面已提示完成，提前结束浏览（已过{elapsed}s）")
+                        return True
+                except Exception:
+                    pass
             # 交替上下滑
             swipe_count += 1
             swipe_x = int(sw * 0.5)
@@ -1278,7 +1274,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     else:
         print(f"  📋 未检测到滑动字样，min_duration=0，快速返回")
     
-    time.sleep(1)
+    time.sleep(0.2)
     return True
 
 

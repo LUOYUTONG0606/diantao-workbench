@@ -42,6 +42,15 @@ SWEEP_LIMIT = 3
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
 # 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
 BROWSE_CAP = 30
+# ── 快速档：把散落的固定等待集中管理 ──────────────────
+# 实测整轮慢的主因不是 OCR 单次耗时（约 1s，缩小截图并不能更快且会丢字），
+# 而是「每个动作后无脑等 1~2 秒」+「返回列表时逐层按返回、每层都重扫」
+# +「浏览任务白等 10 秒保险时间」。这里只保留 WebView 重绘所需的最短等待，
+# 页面没就绪时仍由 read_page(force=True) 强制重扫兜底。
+SETTLE_CLICK = 0.6       # 点击后（原 1.1）
+SETTLE_BACK = 0.5        # 按返回后（原 1.2）
+SETTLE_SCROLL = 0.55     # 滑动后（原 1.2）
+SETTLE_PAGE = 0.5        # 页面切换/弹窗后（原 1.0~2.0）
 # 离开浏览任务时，淘宝可能弹「放弃进度/确认离开」对话框。
 # 这些词出现在对话框里表示「留在页面」（点了就不放弃进度），优先点它们。
 LEAVE_STAY_TEXTS = ("继续浏览", "继续", "取消", "暂不", "再看看", "我再看看", "留在页面", "留在本页")
@@ -203,7 +212,7 @@ def click_node(node):
     if not (0 < cx < screen_width and 0 < cy < screen_height):
         return False
     tap(cx, cy)
-    time.sleep(1.1)
+    time.sleep(SETTLE_CLICK)
     return True
 
 
@@ -266,7 +275,7 @@ def recover_taobao_front(timeout=RECOVER_WAIT):
                 press_back()
             except Exception:
                 pass
-            time.sleep(1.2)
+            time.sleep(SETTLE_BACK)
             if taobao_on_top(confirm=2, interval=0.5):
                 print("  ✅ 已退回淘宝，继续执行")
                 invalidate_scan()
@@ -279,7 +288,7 @@ def recover_taobao_front(timeout=RECOVER_WAIT):
                 ensure_taobao(timeout=20)
             except Exception as exc:
                 print(f"  带回淘宝时出错：{exc}")
-        time.sleep(2)
+        time.sleep(1.0)
     print("  ❌ 等待超时，淘宝仍未回到前台")
     return False
 
@@ -465,7 +474,7 @@ def navigate_to_task_list():
         if not recover_taobao_front():
             print("  当前不在淘宝前台，无法进入任务列表")
             return False
-    time.sleep(1)
+    time.sleep(SETTLE_PAGE)
 
     backs = 0
     entry_clicks = 0
@@ -479,7 +488,7 @@ def navigate_to_task_list():
             continue
         nodes = read_page()
         if not nodes:
-            time.sleep(1.2)
+            time.sleep(SETTLE_PAGE)
             continue
         if dismiss_notice(nodes):
             continue
@@ -491,8 +500,8 @@ def navigate_to_task_list():
             print(f"  点击【去赚金币】（第 {entry_clicks} 次）")
             # 这个列表页停留时间很短（实测十几秒后会自己退回活动主页），
             # 不能固定 sleep 后再读，要高频轮询，一旦识别到马上返回。
-            for _ in range(6):
-                time.sleep(1.2)
+            for _ in range(8):
+                time.sleep(SETTLE_PAGE)
                 probe = read_page(force=True)
                 if is_task_page(probe):
                     print("  已进入淘金币任务列表")
@@ -501,12 +510,12 @@ def navigate_to_task_list():
         entry = home_entry(nodes)
         if entry and click_node(entry):
             print("  点击首页【领淘金币】")
-            time.sleep(2.0)
+            time.sleep(1.0)
             continue
         if backs < 2:
             backs += 1
             press_back()
-            time.sleep(2)
+            time.sleep(SETTLE_BACK)
             continue
         break
 
@@ -514,7 +523,7 @@ def navigate_to_task_list():
         if is_task_page(read_page()):
             print("  已进入淘金币任务列表")
             return True
-        time.sleep(2)
+        time.sleep(SETTLE_PAGE)
     print("  未能进入金币任务列表（当前页面没有可用的金币入口）")
     return False
 
@@ -613,7 +622,7 @@ def exec_task(task_def):
             press_back()
         except Exception:
             pass
-        time.sleep(1)
+        time.sleep(SETTLE_BACK)
     if not taobao_on_top(confirm=TAOBAO_CONFIRM):
         # 不再直接 am start 硬顶，交给统一恢复流程（含分身框处理）
         if not recover_taobao_front():
@@ -634,8 +643,10 @@ def exec_task(task_def):
         if not do_search():
             return False
         print("  搜索完成，在搜索结果页浏览")
+        # 上限按任务时长自适应：15s 任务给 27s，30s 任务给 40s。
+        # 旧的一律 30s 会让「30秒任务 + 保险时间」必然超时，白等 30s 还判失败。
         result = execute_browse_task(d, min_duration=min(seconds, BROWSE_CAP),
-                                     max_wait=30)
+                                     max_wait=min(seconds + 12, 40))
     elif kind == "quiz":
         # 趣味课堂类答题：进入后随机选一个答案。
         result = execute_quiz_task(d)
@@ -646,8 +657,10 @@ def exec_task(task_def):
         result = execute_video_task(d, name, fresh[0]["cx"], fresh[0]["cy"],
                                     duration=seconds, verify_media_page=True)
     else:
+        # 上限按任务时长自适应：15s 任务给 27s，30s 任务给 40s。
+        # 旧的一律 30s 会让「30秒任务 + 保险时间」必然超时，白等 30s 还判失败。
         result = execute_browse_task(d, min_duration=min(seconds, BROWSE_CAP),
-                                     max_wait=30)
+                                     max_wait=min(seconds + 12, 40))
     # 浏览/观看过程中是 u2_scanner 内部在滑动屏幕，不会经过本文件的封装，
     # 所以这里必须手动作废扫描缓存，否则下一步会读到浏览前的旧画面。
     invalidate_scan()
@@ -706,13 +719,13 @@ def execute_quiz_task(d):
         choice = random.choice(options)
         print(f"  答题：随机选「{choice['text']}」@({choice['cx']},{choice['cy']})")
         click_node(choice)
-        time.sleep(2.5)
+        time.sleep(SETTLE_PAGE)
         dismiss_notice(read_page())   # 答完可能弹「答对/答错」或领取窗，顺手关掉
         invalidate_scan()
         return True
     # 没识别到选项：退化浏览，避免空跑（连测时发截图可优化识别）
     print("  答题页未识别到明确选项，退化为短暂浏览")
-    execute_browse_task(d, min_duration=8, max_wait=12)
+    execute_browse_task(d, min_duration=5, max_wait=9)
     return True
 
 
@@ -731,7 +744,7 @@ def do_search():
                 break
         except Exception:
             pass
-        time.sleep(1.0)
+        time.sleep(SETTLE_PAGE)
 
     if field is None:
         print("  未定位到唯一的搜索输入框，本项跳过")
@@ -743,12 +756,12 @@ def do_search():
     try:
         invalidate_scan()
         field.click()
-        time.sleep(0.6)
+        time.sleep(0.3)
         d.send_keys(keyword, clear=True)
-        time.sleep(0.6)
+        time.sleep(0.3)
         d.press("enter")
         invalidate_scan()
-        time.sleep(2)
+        time.sleep(1.0)
         return True
     except Exception as exc:
         print(f"  搜索输入失败：{exc}")
@@ -784,7 +797,7 @@ def back_to_task_page():
         if len(reentry) == 1:
             print("  回到活动主页，重新点击【去赚金币】")
             if click_node(reentry[0]):
-                time.sleep(2)
+                time.sleep(SETTLE_PAGE)
                 continue
         # ⛔ 淘宝主界面再按返回就是退出 App：停手，改走重新导航回列表
         if str(current.get("activity") or "").endswith("TBMainActivity"):
@@ -795,7 +808,7 @@ def back_to_task_page():
         if backs < 6:
             backs += 1
             press_back()
-            time.sleep(1.2)
+            time.sleep(SETTLE_BACK)
             # 离开浏览任务时淘宝可能弹「放弃进度」对话框：拦下并留在页面，
             # 避免把刚做了一半的任务进度作废（即「自动取消进度」）。
             after = read_page()
@@ -831,7 +844,7 @@ def verify_task(before):
     这里强制重新 OCR：到账后进度/已完成标记是页面异步刷新的，
     用缓存会读到任务完成前的旧画面，把做成的任务记成失败。
     """
-    for _ in range(2):
+    for _ in range(1):
         nodes = read_page(force=True)
         if not is_task_page(nodes):
             return False
@@ -852,14 +865,13 @@ def verify_task(before):
                    and n["cx"] > screen_width * .7
                    and abs(n["cy"] - title[0]["cy"]) < screen_height * .045 for n in nodes):
                 return True
-        time.sleep(1.2)
     return False
 
 
 def scroll_list():
     swipe(screen_width // 2, int(screen_height * .75),
           screen_width // 2, int(screen_height * .48), duration=.4)
-    time.sleep(1.2)
+    time.sleep(SETTLE_SCROLL)
 
 
 def scroll_up_to_list(tries=3):
@@ -870,7 +882,7 @@ def scroll_up_to_list(tries=3):
             return nodes
         swipe(screen_width // 2, int(screen_height * .35),
               screen_width // 2, int(screen_height * .8), duration=.3)
-        time.sleep(1.2)
+        time.sleep(SETTLE_SCROLL)
     return read_page()
 
 
@@ -893,7 +905,7 @@ def scroll_to_top(tries=8):
             return nodes
         swipe(screen_width // 2, int(screen_height * .35),
               screen_width // 2, int(screen_height * .8), duration=.3)
-        time.sleep(1.0)
+        time.sleep(SETTLE_SCROLL)
     return read_page(force=True)
 
 
@@ -929,7 +941,7 @@ def claim_accumulated_reward(nodes):
                 and abs(n["cy"] - t["cy"]) < screen_height * .06]
         if btns and click_node(btns[0]):
             print("  领取【今日累计奖励】")
-            time.sleep(1.2)
+            time.sleep(SETTLE_PAGE)
             invalidate_scan()
             try:
                 dismiss_notice(read_page(force=True))
@@ -957,7 +969,7 @@ def recover_task_page():
                 return True
         scroll_up_to_list()
         invalidate_scan()
-        time.sleep(1)
+        time.sleep(SETTLE_PAGE)
     return is_task_page(read_page(force=True))
 
 
@@ -983,7 +995,7 @@ def run_tasks(max_tasks=30):
         boot_nodes = read_page(force=True)
         if parse_task_list(boot_nodes):
             break
-        time.sleep(1.2)
+        time.sleep(SETTLE_PAGE)
     else:
         print("  [提示] 任务行尚未渲染，仍按正常流程从顶部开始扫描")
 
@@ -994,7 +1006,7 @@ def run_tasks(max_tasks=30):
             # 所以不能只是等待：发现退回就重新点一次「去赚金币」再进。
             recovered = False
             for attempt in range(3):
-                time.sleep(1.2)
+                time.sleep(SETTLE_PAGE)
                 nodes = read_page(force=True)   # 这里就是「等页面自己变化」，必须重扫
                 if is_task_page(nodes):
                     recovered = True
@@ -1006,7 +1018,7 @@ def run_tasks(max_tasks=30):
                 # 先往上滚一下：滑进商品流时任务行会离开视口，误判成「不在列表」
                 swipe(screen_width // 2, int(screen_height * .35),
                       screen_width // 2, int(screen_height * .8), duration=.3)
-                time.sleep(1)
+                time.sleep(SETTLE_SCROLL)
                 nodes = read_page(force=True)
                 if is_task_page(nodes):
                     recovered = True
@@ -1016,7 +1028,7 @@ def run_tasks(max_tasks=30):
                 if len(reentry) == 1:
                     print("  页面已退回活动主页，重新点击【去赚金币】再进")
                     if click_node(reentry[0]):
-                        time.sleep(1.5)
+                        time.sleep(SETTLE_PAGE)
                         nodes = read_page(force=True)
                         if is_task_page(nodes):
                             recovered = True
@@ -1041,7 +1053,7 @@ def run_tasks(max_tasks=30):
         if claim_accumulated_reward(nodes) and claim_streak < 3:
             claim_streak += 1
             invalidate_scan()
-            time.sleep(1.2)
+            time.sleep(SETTLE_PAGE)
             continue
         claim_streak = 0
         # ⛔ 不在迭代开头就点「展开」：那样会把列表往下滚，把顶部「每日任务」
@@ -1053,14 +1065,15 @@ def run_tasks(max_tasks=30):
                  and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
         print(f"  [扫描] 可见 {len(nodes)} 块文字，可执行 {len(tasks)} 个任务")
         if not tasks:
-            # 页面可能还在加载/切换（实测点【展开】后会短暂显示「正在切换...」、
-            # OCR 读到 0 块）。强制重扫并稍等，别把「加载中」算成一次空屏。
-            time.sleep(1.0)
-            nodes = read_page(force=True)
-            tasks = [t for t in parse_task_list(nodes)
-                     if task_key(t) not in finished
-                     and attempts.get(task_key(t), 0) < MAX_ATTEMPTS
-                     and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
+            # 只有「疑似还在加载/切换」（OCR 读到的文字块很少）才额外重扫一次。
+            # 旧逻辑每一屏空都无条件 sleep 1s + 重扫一次，滚 20 屏就白等 40 秒。
+            if len(nodes) < 12:
+                time.sleep(SETTLE_PAGE)
+                nodes = read_page(force=True)
+                tasks = [t for t in parse_task_list(nodes)
+                         if task_key(t) not in finished
+                         and attempts.get(task_key(t), 0) < MAX_ATTEMPTS
+                         and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
             if not tasks:
                 if not is_task_page(nodes):
                     # 滑进商品流或页面正在切换：先回列表，不要继续往下滚
@@ -1090,8 +1103,8 @@ def run_tasks(max_tasks=30):
                         expanded_this_lap = True
                         expand_clicks += 1
                         print("  点击【展开】，显示更多任务")
-                        for _ in range(5):
-                            time.sleep(1.2)
+                        for _ in range(3):
+                            time.sleep(SETTLE_PAGE)
                             if is_task_page(read_page(force=True)):
                                 break
                 # 回顶部重新完整遍历；只有连续多轮「顶→底→回顶」都空才收工
@@ -1129,6 +1142,7 @@ def run_tasks(max_tasks=30):
         if start_coins is None:
             start_coins = before_coins
         print(f"  [{total}] {task['name']} ({task['type']}, {task['seconds']}秒)")
+        task_t0 = time.monotonic()
         try:
             exec_task(task)
         except Exception as exc:
@@ -1147,6 +1161,7 @@ def run_tasks(max_tasks=30):
         recover_fail = 0
 
         # 优先用「今日速赚」的增量确认到账，其次才看任务行进度
+        print(f"  ⏱ 本项执行+返回耗时 {time.monotonic() - task_t0:.1f}s")
         after_nodes = read_page()
         after_coins = today_coins(after_nodes)
         gained = (before_coins is not None and after_coins is not None
@@ -1202,7 +1217,7 @@ def bootstrap():
                 return True
         except Exception:
             pass
-        time.sleep(1.5)
+        time.sleep(SETTLE_PAGE)
 
     try:
         current = d.app_current().get("package")

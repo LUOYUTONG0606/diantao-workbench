@@ -38,6 +38,12 @@ STILL_SCREEN_LIMIT = 3
 # 连续多少轮「顶部 → 底部 → 回顶部」完整遍历都没有可执行任务才收工。
 # 旧逻辑只数「连续 20 屏空」：滚到底后反复读同一片区域就会误判「任务做完了」。
 SWEEP_LIMIT = 3
+# 「更多专享福利」折叠区的展开按钮。实测空屏右侧文字块里就有「展开」
+# （同排还有 51% / 爱X / 秋冬摩托骑行>），旧逻辑要等扫到底才点、
+# 点完又立刻回顶部，刚展开出来的任务又被滚没了。
+EXPAND_TEXTS = ("展开", "展开更多", "展开全部", "查看更多", "更多任务", "查看全部", "展开任务")
+COLLAPSE_TEXTS = ("收起", "收拢")
+MAX_EXPAND_CLICKS = 2   # 本轮最多展开两次；已展开状态显示「收起」，必须排除
 # 浏览/观看类任务的最长时长上限（秒）。使用者要求浏览最长 30s。
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
 # 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
@@ -886,6 +892,27 @@ def scroll_up_to_list(tries=3):
     return read_page()
 
 
+def find_expand_button(nodes):
+    """定位「更多专享福利」折叠区的展开按钮。
+
+    实测空屏右侧文字块里就有「展开」。已展开状态会变成「收起」，必须排除，
+    否则再点一次反而把列表收回去。多个候选取列表下方最靠上的一个。
+    """
+    cands = []
+    for n in nodes:
+        t = normalize(n["text"])
+        if not t or len(t) > 10 or any(w in t for w in COLLAPSE_TEXTS):
+            continue
+        if any(t == w or t.startswith(w) for w in EXPAND_TEXTS):
+            cands.append(n)
+    if not cands:
+        return None
+    lower = [n for n in cands if n["cy"] > screen_height * .3]
+    cands = lower or cands
+    cands.sort(key=lambda n: n["cy"])
+    return cands[-1]
+
+
 def at_list_top(nodes):
     """是否已经回到金币任务列表顶部（顶部锚点可见）。"""
     texts = [normalize(n["text"]) for n in nodes]
@@ -985,7 +1012,6 @@ def run_tasks(max_tasks=30):
     sweep_empty = 0        # 连续「完整遍历都没有任务」的轮数
     still_screens = 0      # 连续读到相同文字块的屏数（到底判定）
     last_signature = None
-    expanded_this_lap = False
     end_reason = f"已达本轮最大执行次数 {max_tasks}"
 
     # 刚进列表时 WebView 还在渲染：实测首屏只 OCR 到 20 多块、任务行尚未出现。
@@ -1056,9 +1082,9 @@ def run_tasks(max_tasks=30):
             time.sleep(SETTLE_PAGE)
             continue
         claim_streak = 0
-        # ⛔ 不在迭代开头就点「展开」：那样会把列表往下滚，把顶部「每日任务」
-        # 整批滚出屏幕、永远做不掉。改成「当前屏幕已无可执行任务」时才展开/下滚，
-        # 保证顶部每日任务优先做掉。
+        # 顶部「每日任务」优先：主循环每轮先做当前屏可见的任务，只有当前屏
+        # 已经没有可执行的了才去点【展开】或往下滚，避免一进列表就展开、
+        # 把顶部任务整批滚出屏幕（上次「还有好几个任务没做」的成因之一）。
         tasks = [t for t in parse_task_list(nodes)
                  if task_key(t) not in finished
                  and attempts.get(task_key(t), 0) < MAX_ATTEMPTS
@@ -1080,6 +1106,27 @@ def run_tasks(max_tasks=30):
                     scroll_up_to_list()
                     invalidate_scan()
                     continue
+                # ★ 折叠区里还有一批任务：当前屏没可做的了就点【展开】。
+                # 顶部每日任务此时已优先做完，展开不会把它们饿死。
+                # 第一次展开要趁早（看到按钮就点），不再等「扫到底」。
+                if expand_clicks == 0:
+                    expand_btn = find_expand_button(nodes)
+                    if expand_btn and click_node(expand_btn):
+                        expand_clicks += 1
+                        print(f"  点击【{normalize(expand_btn['text'])}】，展开更多任务")
+                        # 展开会重排页面，等切换完成；随后直接回主循环重新解析。
+                        # 绝不在这里回顶部，否则刚展开出来的任务又被滚走。
+                        for _ in range(4):
+                            time.sleep(SETTLE_PAGE)
+                            fresh = read_page(force=True)
+                            if fresh and is_task_page(fresh):
+                                break
+                        invalidate_scan()
+                        empty_times = 0
+                        still_screens = 0
+                        last_signature = None
+                        sweep_empty = 0
+                        continue
                 empty_times += 1
                 signature = "|".join(normalize(n["text"]) for n in nodes)
                 if signature == last_signature:
@@ -1091,41 +1138,49 @@ def run_tasks(max_tasks=30):
                     preview = [normalize(n["text"]) for n in nodes
                                if n["cx"] > screen_width * .7][:6]
                     print(f"  [空屏 {empty_times}] 可见 {len(nodes)} 块；右侧文字：{preview}")
-                # 还没到底就继续往下滚；不再「一空屏就点展开」把顶部任务滚没
+                # 还没到底就继续往下滚（滚到出现【展开】的那一屏会立刻点）
                 if still_screens < STILL_SCREEN_LIMIT and empty_times < EMPTY_LIMIT:
                     scroll_list()
                     continue
-                # 扫到底了才展开「更多专享福利」；展开会重排页面，必须等切换完成
-                if not expanded_this_lap:
-                    expand = [n for n in nodes if normalize(n["text"]) == "展开"
-                              and n["cy"] > screen_height * .5]
-                    if len(expand) == 1 and click_node(expand[0]):
-                        expanded_this_lap = True
+                # 扫到底了：若还有未展开的折叠区，再点一次并继续扫，别急着回顶
+                if expand_clicks < MAX_EXPAND_CLICKS:
+                    expand_btn = find_expand_button(nodes)
+                    if expand_btn and click_node(expand_btn):
                         expand_clicks += 1
-                        print("  点击【展开】，显示更多任务")
+                        print(f"  再点【{normalize(expand_btn['text'])}】"
+                              f"（第 {expand_clicks}/{MAX_EXPAND_CLICKS} 次展开）")
                         for _ in range(3):
                             time.sleep(SETTLE_PAGE)
                             if is_task_page(read_page(force=True)):
                                 break
-                # 回顶部重新完整遍历；只有连续多轮「顶→底→回顶」都空才收工
+                        invalidate_scan()
+                        empty_times = 0
+                        still_screens = 0
+                        last_signature = None
+                        continue
+                # 回顶部完整重扫。收工前必须已经展开过，否则宁可多扫几轮，
+                # 也不能把折叠区里没露出来的任务漏掉。
                 sweep_empty += 1
-                if sweep_empty >= SWEEP_LIMIT:
-                    end_reason = (f"连续 {sweep_empty} 轮「顶部→底部→回顶部」完整遍历"
-                                  f"都没有可执行任务，本轮任务已做完")
+                if sweep_empty >= SWEEP_LIMIT and expand_clicks >= 1:
+                    end_reason = (f"已展开 {expand_clicks} 次，连续 {sweep_empty} 轮"
+                                  f"「顶部→底部→回顶部」完整遍历都没有可执行任务，本轮任务已做完")
                     break
-                print(f"  已扫到列表底部，回到顶部重新遍历（第 {sweep_empty + 1} 轮）")
+                if sweep_empty >= SWEEP_LIMIT * 2:
+                    end_reason = (f"始终没找到【展开】按钮，已完整遍历 {sweep_empty} 轮，停止"
+                                  f"（请确认手机停在淘金币任务列表）")
+                    break
+                print(f"  已扫到列表底部，回到顶部重新遍历（第 {sweep_empty + 1} 轮，"
+                      f"已展开 {expand_clicks} 次）")
                 scroll_to_top()
                 attempts.clear()   # 给被 MAX_ATTEMPTS 挡住的任务一次重试机会
                 empty_times = 0
                 still_screens = 0
                 last_signature = None
-                expanded_this_lap = False
                 continue
         empty_times = 0
         still_screens = 0
         last_signature = None
         sweep_empty = 0
-        expanded_this_lap = False
         task = tasks[0]
         key = task_key(task)
         # 浏览/观看类任务：要求的真实时长超过上限就直接跳过，不进入、不截断。

@@ -1100,6 +1100,116 @@ def _execute_video_task(
 # ========================================================
 # 浏览任务执行
 # ========================================================
+# ========================================================
+# 任务完成提示（「看到完成就提前收工，去做下一个」）
+# ========================================================
+# 实测做完任务页面会显示「已得XX金币」，这是最可靠的结算信号。
+# 只认「明确的完成态」文案。绝不能用 "任务完成" 这种宽泛子串：页面常见的
+# 规则文案「完成任务得额外金币」「任务完成后可领」「完成下方任务」都会误命中，
+# 导致任务还没做够时长就退出。
+COMPLETION_HINTS = (
+    "恭喜完成任务", "恭喜完成", "恭喜获得", "任务已完成", "本轮任务已完成",
+    "浏览已完成", "已完成浏览", "已完成本次", "已领取", "已完成",
+    "奖励已到账", "金币已到账", "任务已达成",
+)
+# 「已得 N 金币」这类带金额的到账文案：只在任务真正结算后出现。
+# 引导文案写的是「可得 / 最高得 / 浏览15秒得」，不含「已」，不会误命中。
+STRONG_DONE_RE = re.compile(
+    r"(?:已得|已获得|已领取|已到账|已领到)\s*\d+\s*(?:个)?(?:淘)?金币"
+    r"|(?:淘)?金币已(?:到账|入账|领取)"
+    r"|已得(?:淘)?金币"
+)
+# 命中即否决：规则 / 引导 / 商品文案 / 常驻统计，都不是本次完成提示。
+COMPLETION_NEGATIVE = (
+    "完成任务得", "完成任务可", "完成任务后", "完成任务即", "完成任务领",
+    "完成任务赚", "完成下方任务", "完成以下任务", "完成指定任务", "做任务得",
+    "看视频得", "浏览得", "去完成", "待完成", "未完成", "还需", "再浏览",
+    "前往完成", "即可获得", "可获得", "有机会得",
+    "可得", "最高得", "最高可", "再得", "即得", "将得",
+    "今日已得", "累计已得", "共已得", "总共已得", "累计获得",
+)
+
+
+def is_strong_completion(text):
+    """是否「已得 N 金币」这类带金额的结算文案（页面只在做完后显示）。"""
+    return bool(STRONG_DONE_RE.search(re.sub(r"\s+", "", str(text or ""))))
+
+
+def page_shows_completion(nodes, exclude=None):
+    """从 OCR 文字块里判断页面是否出现「本任务已完成」的明确提示。
+
+    返回命中的文案，没有则返回 None。exclude 是进入任务页时首屏已有的文字，
+    用来排除「今日已得300金币」这类常驻统计：只有浏览过程中新出现的完成
+    文案才算数，避免一进页面就被旧文案骗到提前退出。长句、规则/引导文案、
+    未做满进度一律不认。
+    """
+    short = []
+    for n in nodes or []:
+        try:
+            t = re.sub(r"\s+", "", str(n.get("text", "")))
+        except Exception:
+            continue
+        if not t:
+            continue
+        short.append(t)
+        if len(t) > 24 or (exclude and t in exclude):
+            continue
+        if any(w in t for w in COMPLETION_NEGATIVE):
+            continue
+        # 「已完成 1/3」「已领取 1/2」是进度不是完成，只有做满才算。
+        m = re.search(r"(\d+)\s*/\s*(\d+)", t)
+        if m and m.group(1) != m.group(2):
+            continue
+        for h in COMPLETION_HINTS:
+            if h in t:
+                return t
+        if STRONG_DONE_RE.search(t):
+            return t
+    # OCR 有时把「已得30」和「金币」拆成两块，补一次同屏组合判定。
+    for s in short:
+        m = re.fullmatch(r"((?:已得|已获得|已到账)\s*\d+)", s)
+        if m and not (exclude and m.group(1) in exclude) \
+                and any("金币" in x and len(x) <= 12 for x in short):
+            return m.group(1) + "金币"
+    return None
+
+
+def confirm_page_completion(device, first_nodes, elapsed, min_duration, exclude=None):
+    """浏览途中检测「页面已提示完成」，全部条件满足才允许提前收工。
+
+    三重保险，任一不满足都继续正常浏览，绝不提前退出：
+      1) 已满足任务要求的最低时长 min_duration（没待够绝不提前走）
+      2) 命中的是浏览过程中新出现的完成态文案（排除规则/引导文案、
+         常驻统计、未满进度）
+      3) 「已得N金币」等带金额的结算文案一次命中即收工（浮层 2~3s 就消失，
+         等二次扫描反而会错过）；泛化文案仍需独立二次 OCR 确认
+    扫描异常一律按「未确认」处理，不影响原有浏览流程。
+    """
+    if elapsed < min_duration:
+        return False
+    hit = page_shows_completion(first_nodes, exclude)
+    if not hit:
+        return False
+    if is_strong_completion(hit):
+        print(f"  ✅ 页面显示【{hit}】，金币已结算，提前收工去做下一个"
+              f"（已过 {elapsed}s / 要求 {min_duration}s）")
+        return True
+    print(f"  🔎 疑似完成提示【{hit}】，二次确认中…")
+    time.sleep(0.8)
+    try:
+        second_nodes = scan_page(device)
+    except Exception:
+        print("  ⚠ 二次确认扫描失败，继续浏览（不提前退出）")
+        return False
+    hit2 = page_shows_completion(second_nodes, exclude)
+    if not hit2:
+        print("  ⚠ 二次确认未命中，继续浏览（不提前退出）")
+        return False
+    print(f"  ✅ 页面连续两次提示完成【{hit2}】，提前收工去做下一个"
+          f"（已过 {elapsed}s / 要求 {min_duration}s）")
+    return True
+
+
 def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     """
     通用浏览任务：实时扫描"滑动浏览XX秒"字样，消失即任务完成
@@ -1144,6 +1254,12 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
 
     # 再检测"滑动浏览XX秒"字样，兼容"秒"字未被控件树收录
     nodes = scan_page(device)
+    # 进入任务页时首屏已有的文字：用于排除「今日已得300金币」这类常驻统计，
+    # 只有浏览过程中新出现的完成文案才算完成信号。
+    baseline_texts = {
+        re.sub(r"\s+", "", str(n.get("text", "")))
+        for n in nodes or [] if isinstance(n, dict)
+    }
     has_sliding_text = False
     sliding_min_seconds = 0
     for n in nodes:
@@ -1182,6 +1298,14 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
                     break
 
             elapsed = int(time.time() - browse_start)
+            # 页面已明确提示完成 → 提前收工去做下一个。倒计时还在跑
+            # （remaining > 3）时不认完成提示，防止误读导致提前离开。
+            # 门槛用 max(任务要求, 页面倒计时秒数)，不含 +4s 保险时间，
+            # 所以既保证做够时长，又能真正省下等待。
+            hard_min = max(min_duration, sliding_min_seconds - effective_extra)
+            if (not found_sliding or remaining <= 3) and confirm_page_completion(
+                    device, nodes, elapsed, hard_min, baseline_texts):
+                return True
             if found_sliding and 0 <= remaining <= 3 and elapsed >= sliding_min_seconds:
                 print(f"  ✅ 滑动剩余 {remaining}s，即将完成，下滑收尾...")
                 for _ in range(4):
@@ -1237,19 +1361,21 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
         fixed_duration = min_duration + effective_extra
         browse_start = time.time()
         # 旧逻辑把「完成提示」检测写在 >= fixed_duration 之后，等于永远等满才查，
-        # 是死代码。改为达到任务最低时长后每 5s 查一次，页面提前判定完成就收工。
-        next_hint_check = browse_start + max(min_duration, 5) - 1
+        # 是死代码。改为达到任务最低时长后每 2s 查一次；只有「严格完成文案 +
+        # 独立二次 OCR 确认」才提前收工，绝不因一次误读就退出。
+        next_hint_check = browse_start + max(min_duration, 5)
         print(f"  📋 未检测到滑动字样，按最长 {fixed_duration} 秒浏览（任务 {min_duration}s + 保险 {effective_extra}s）...")
         while time.time() - browse_start < fixed_duration and time.time() - start < max_wait:
             elapsed = int(time.time() - start)
             now = time.time()
             if now >= next_hint_check and now - browse_start >= min_duration:
-                next_hint_check = now + 5
+                # 每 2 秒查一次（原来 5 秒，最后几秒窗口内常常一次都查不到）。
+                next_hint_check = now + 2
                 try:
                     hint_nodes = scan_page(device)
-                    if any(k in n["text"] for n in hint_nodes
-                           for k in ("恭喜完成任务", "恭喜完成", "任务完成", "获得奖励")):
-                        print(f"  ✅ 页面已提示完成，提前结束浏览（已过{elapsed}s）")
+                    if confirm_page_completion(device, hint_nodes,
+                                               int(now - browse_start),
+                                               min_duration, baseline_texts):
                         return True
                 except Exception:
                     pass

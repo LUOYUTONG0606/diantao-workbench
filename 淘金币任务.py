@@ -43,6 +43,9 @@ SWEEP_LIMIT = 3
 # 点完又立刻回顶部，刚展开出来的任务又被滚没了。
 EXPAND_TEXTS = ("展开", "展开更多", "展开全部", "查看更多", "更多任务", "查看全部", "展开任务")
 COLLAPSE_TEXTS = ("收起", "收拢")
+# 任务行右侧出现这些文字 = 这项今天已经做完了，直接跳过做下一个，
+# 避免「+N」奖励图标或每日标签仍可点时把已完成的任务重复做一遍。
+DONE_ROW_TEXTS = ("已完成", "已领取", "已领完", "今日已完成", "明日再来", "明天再来")
 MAX_EXPAND_CLICKS = 2   # 本轮最多展开两次；已展开状态显示「收起」，必须排除
 # 浏览/观看类任务的最长时长上限（秒）。使用者要求浏览最长 30s。
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
@@ -552,6 +555,15 @@ def parse_task_list(nodes, include_skipped=False):
     results = []
     seen = set()
     for button in buttons:
+        # 同一行右侧已显示「已完成/已领取/明日再来」→ 这项已完成，跳过做下一个。
+        # 只认短整块文字（排除长规则文案），并要求 y 坐标同排，避免误伤别的行。
+        if any(n["cx"] > screen_width * .62
+               and abs(n["cy"] - button["cy"]) < screen_height * .02
+               and len(n["text"]) <= 12
+               and (n["text"] in DONE_ROW_TEXTS
+                    or (n["text"].startswith("已完成") and "/" not in n["text"]))
+               for n in nodes):
+            continue
         # 标题位于奖励图标左上方；下方的“浏览15秒”等小字只作为任务说明。
         titles = [
             n for n in nodes

@@ -1174,6 +1174,37 @@ def page_shows_completion(nodes, exclude=None):
     return None
 
 
+def page_shows_coin_settlement(nodes, exclude=None):
+    """只认「已得N淘金币」这类金币到账的强结算信号。
+
+    与 page_shows_completion 的区别：只认带金额 / 到账的结算文案（长度放宽到
+    40 字，结算浮层常带一句说明），不受泛化「已完成」文案影响。看到它即代表
+    金币已经到账，可以立刻收工，不需要再等待任何保险时间。
+    """
+    short = []
+    for n in nodes or []:
+        try:
+            t = re.sub(r"\s+", "", str(n.get("text", "")))
+        except Exception:
+            continue
+        if t:
+            short.append(t)
+    for t in short:
+        if len(t) > 40 or (exclude and t in exclude):
+            continue
+        if any(w in t for w in COMPLETION_NEGATIVE):
+            continue
+        if STRONG_DONE_RE.search(t):
+            return t
+    # OCR 把「已得30」和「淘金币」拆成两块时，补一次同屏组合判定。
+    for s in short:
+        m = re.fullmatch(r"((?:已得|已获得|已领取|已到账)\s*\d+)", s)
+        if m and not (exclude and m.group(1) in exclude) \
+                and any("金币" in x and len(x) <= 12 for x in short):
+            return m.group(1) + "淘金币"
+    return None
+
+
 def confirm_page_completion(device, first_nodes, elapsed, min_duration, exclude=None):
     """浏览途中检测「页面已提示完成」，全部条件满足才允许提前收工。
 
@@ -1191,8 +1222,8 @@ def confirm_page_completion(device, first_nodes, elapsed, min_duration, exclude=
     if not hit:
         return False
     if is_strong_completion(hit):
-        print(f"  ✅ 页面显示【{hit}】，金币已结算，提前收工去做下一个"
-              f"（已过 {elapsed}s / 要求 {min_duration}s）")
+        print(f"  ✅ 页面显示【{hit}】，金币已结算，立即收工做下一个"
+              f"（已过 {int(elapsed)}s / 要求 {min_duration}s，不追加保险时间）")
         return True
     print(f"  🔎 疑似完成提示【{hit}】，二次确认中…")
     time.sleep(0.8)
@@ -1217,14 +1248,16 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     
     策略：
       1. 先实时扫描"滑动浏览XX秒"字样，如果找到 → 提取秒数N，至少滑动N秒后再退出
-      2. 如果未找到滑动字样 → 扫描结束后按 min_duration + 保险时间固定下滑浏览
+      2. 如果未找到滑动字样 → 按 min_duration 下滑；看到「已得N淘金币」立即收工，
+         始终没看到才兜底 extra_seconds 秒
       3. 兜底 max_wait 秒超时退出
       4. 下滑间隔缩短，防止文字提前滑出屏幕导致误判完成
     
     参数:
         min_duration: 无论是否检测到滑动字样，都必须满足的最小浏览时间（秒）
         max_wait: 超时上限（秒）
-        extra_seconds: 浏览追加的保险时间（秒），30秒以内任务至少追加10秒
+        extra_seconds: 仅「全程没出现结算信号」时的兜底时间（秒）；
+                       页面显示「已得N淘金币」时立即收工，不追加
     返回:
         True 正常完成, False 超时
     """
@@ -1232,15 +1265,16 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     swipe_count = 0
     start = time.time()
 
-    # ── 自动适配短任务（30秒以内）的追加时间 ──
-    # 旧逻辑对 <=30s 任务一律 +10s，实测把 15s 任务拖成 25s，是整轮最慢的一环。
-    # 快速档改为 +4s；模式B 会在浏览中周期性检测「完成/领取」提示，
-    # 页面提前判定完成就立刻收工，既提速又不会少做。
+    # ── 「保险时间」只在始终没看到结算信号时兜底 ──
+    # 实测任务做完页面会显示「已得30淘金币」，即金币已到账的强信号。看到就
+    # 立刻收工，不再追加任何保险时间（使用者要求）。只有全程没出现结算文案
+    # （OCR 漏读 / 浮层错过 / 文案变化）时，才额外兜底 N 秒，保证任务做够，
+    # 不会「没完成就退出」。
     effective_extra = extra_seconds
     task_ref_duration = min_duration if min_duration > 0 else 999
     if task_ref_duration <= 30:
         effective_extra = 4
-        print(f"  ⏱️ 短任务保险时间 {effective_extra}s（快速档）")
+    print(f"  ⏱️ 看到【已得N淘金币】立即收工；仅无结算信号时兜底 {effective_extra}s")
 
     # 立即下滑一次，不等页面扫描
     swipe_x = int(sw * 0.5)
@@ -1267,13 +1301,16 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
         match = re.search(r"滑动浏览\s*(\d+)", text)
         if match:
             detected_sec = int(match.group(1))
-            # 滑动文本检测到 <= 30s 也自动追加 10s
             if detected_sec <= 30:
                 effective_extra = 4
             has_sliding_text = True
             # 页面倒计时可能已减少，不能覆盖调用方要求的最低时长。
-            sliding_min_seconds = max(min_duration, detected_sec) + effective_extra
-            print(f"  📋 检测到【{text}】，至少浏览 {sliding_min_seconds} 秒，使用滑动文本监控模式")
+            # 保险时间不再计入「必须等满」的时长：页面一旦显示「已得N淘金币」
+            # 就立即收工；始终没出现结算信号才兜底到 fallback_deadline。
+            sliding_min_seconds = max(min_duration, detected_sec)
+            fallback_deadline = sliding_min_seconds + effective_extra
+            print(f"  📋 检测到【{text}】，任务要求 {sliding_min_seconds}s"
+                  f"（看到【已得N淘金币】立即收工，不追加保险时间）")
             break
     
     if has_sliding_text:
@@ -1297,16 +1334,24 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
                         print(f"    检测到【{text}】剩余 {remaining}s... (已过{elapsed}s)")
                     break
 
-            elapsed = int(time.time() - browse_start)
-            # 页面已明确提示完成 → 提前收工去做下一个。倒计时还在跑
-            # （remaining > 3）时不认完成提示，防止误读导致提前离开。
-            # 门槛用 max(任务要求, 页面倒计时秒数)，不含 +4s 保险时间，
-            # 所以既保证做够时长，又能真正省下等待。
-            hard_min = max(min_duration, sliding_min_seconds - effective_extra)
-            if (not found_sliding or remaining <= 3) and confirm_page_completion(
-                    device, nodes, elapsed, hard_min, baseline_texts):
+            elapsed_f = time.time() - browse_start
+            elapsed = int(elapsed_f)
+            hard_min = max(min_duration, sliding_min_seconds)
+            # ① 「已得N淘金币」= 金币已到账，最强证据：看到立即收工，
+            #    不受倒计时是否仍在跑的限制，也不追加任何保险时间。
+            #    仍需待够任务要求时长，避免把常驻统计误当成本次结算。
+            settled = page_shows_coin_settlement(nodes, baseline_texts)
+            if settled and elapsed_f >= hard_min:
+                print(f"  ✅ 已显示【{settled}】，金币已结算，立即收工"
+                      f"（{elapsed}s / 要求 {hard_min}s，不追加保险时间）")
                 return True
-            if found_sliding and 0 <= remaining <= 3 and elapsed >= sliding_min_seconds:
+            # ② 泛化完成文案仍走三重保险（含独立二次 OCR 确认）；
+            #    倒计时还在跑（remaining > 3）时不认，防止误读。
+            if (not found_sliding or remaining <= 3) and confirm_page_completion(
+                    device, nodes, elapsed_f, hard_min, baseline_texts):
+                return True
+            # ③ 倒计时消失 / 将尽，且已待够任务要求时长 → 直接收工
+            if found_sliding and 0 <= remaining <= 3 and elapsed_f >= hard_min:
                 print(f"  ✅ 滑动剩余 {remaining}s，即将完成，下滑收尾...")
                 for _ in range(4):
                     swipe_count += 1
@@ -1320,8 +1365,8 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
                 time.sleep(1)
                 return True
 
-            if not found_sliding and elapsed >= sliding_min_seconds:
-                print(f"  ✅ 【滑动浏览XX秒】字样消失，已达 {sliding_min_seconds}s 要求 (共滑动{swipe_count}次)")
+            if not found_sliding and elapsed_f >= hard_min:
+                print(f"  ✅ 【滑动浏览XX秒】字样消失，已达 {hard_min}s 要求 (共滑动{swipe_count}次)")
                 for _ in range(4):
                     swipe_count += 1
                     s_y = random.randint(int(sh * 0.15), int(sh * 0.25))
@@ -1334,7 +1379,13 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
                 time.sleep(1)
                 return True
             if not found_sliding:
-                print(f"  ⚠️ 字样已消失但仅过 {elapsed}s < {sliding_min_seconds}s，继续滑动等候...")
+                print(f"  ⚠️ 字样已消失但仅过 {elapsed}s < {hard_min}s，继续滑动等候...")
+
+            # ④ 全程没有任何完成信号：兜底时间到了也正常收工，
+            #    避免 OCR 一直漏读时无限滑下去。
+            if elapsed_f >= fallback_deadline:
+                print(f"  ⏱️ 全程未见结算提示，兜底 {effective_extra}s 已满，正常收工（{elapsed}s）")
+                return True
 
             # 每次页面扫描之间连续滑动，提升浏览任务完成效率
             for _ in range(5):
@@ -1355,30 +1406,42 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
         time.sleep(0.2)
         return False
     
-    # 模式B：未检测到滑动字样，按固定时长下滑浏览 + 实时完成检测
+    # 模式B：未检测到滑动字样，按任务要求时长下滑 + 实时结算检测
     if min_duration > 0:
-        # 页面加载和首次扫描耗时不抵扣实际浏览；保险时间也必须计入。
-        fixed_duration = min_duration + effective_extra
+        # 「保险时间」不再计入必须等满的时长：页面一旦显示「已得N淘金币」
+        # 就立即收工。只有全程没出现结算文案（OCR 漏读 / 浮层错过）时，
+        # 才额外兜底 effective_extra 秒，保证任务做够、不会没完成就退出。
+        fixed_duration = min_duration
+        grace_duration = min_duration + effective_extra
         browse_start = time.time()
-        # 旧逻辑把「完成提示」检测写在 >= fixed_duration 之后，等于永远等满才查，
-        # 是死代码。改为达到任务最低时长后每 2s 查一次；只有「严格完成文案 +
-        # 独立二次 OCR 确认」才提前收工，绝不因一次误读就退出。
-        next_hint_check = browse_start + max(min_duration, 5)
-        print(f"  📋 未检测到滑动字样，按最长 {fixed_duration} 秒浏览（任务 {min_duration}s + 保险 {effective_extra}s）...")
-        while time.time() - browse_start < fixed_duration and time.time() - start < max_wait:
-            elapsed = int(time.time() - start)
+        reached = False
+        print(f"  📋 未检测到滑动字样，任务要求 {fixed_duration}s；"
+              f"看到【已得N淘金币】立即收工，仅无结算信号时兜底 {effective_extra}s...")
+        while time.time() - start < max_wait:
             now = time.time()
-            if now >= next_hint_check and now - browse_start >= min_duration:
-                # 每 2 秒查一次（原来 5 秒，最后几秒窗口内常常一次都查不到）。
-                next_hint_check = now + 2
+            elapsed_f = now - browse_start
+            if elapsed_f >= fixed_duration:
+                reached = True
+                # 兜底时间到点就直接收工，不再多花一次 OCR
+                if elapsed_f >= grace_duration:
+                    print(f"  ⏱️ 全程未见结算提示，兜底 {effective_extra}s 已满，正常收工")
+                    break
+                # 达到任务要求时长后每一轮都查（原来每 2s 一次，2~3s 的
+                # 结算浮层经常整个错过，白等到保险时间结束）。
+                hint_nodes = None
                 try:
                     hint_nodes = scan_page(device)
-                    if confirm_page_completion(device, hint_nodes,
-                                               int(now - browse_start),
-                                               min_duration, baseline_texts):
-                        return True
                 except Exception:
                     pass
+                if hint_nodes is not None:
+                    settled = page_shows_coin_settlement(hint_nodes, baseline_texts)
+                    if settled:
+                        print(f"  ✅ 已显示【{settled}】，金币已结算，立即收工"
+                              f"（{int(elapsed_f)}s / 要求 {fixed_duration}s，不追加保险时间）")
+                        return True
+                    if confirm_page_completion(device, hint_nodes, elapsed_f,
+                                               fixed_duration, baseline_texts):
+                        return True
             # 交替上下滑
             swipe_count += 1
             swipe_x = int(sw * 0.5)
@@ -1392,8 +1455,8 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
                 device.swipe(swipe_x, s_y, swipe_x, e_y, duration=0.3)
             except:
                 pass
-            time.sleep(0.8)
-        if time.time() - browse_start < fixed_duration:
+            time.sleep(0.5)
+        if not reached:
             print(f"  ⏰ 浏览超时 ({max_wait}s)，未达到 {fixed_duration}s 要求")
             return False
         print(f"  浏览完成，滑动 {swipe_count} 次")

@@ -80,6 +80,17 @@ if %COUNT% GTR 1 (
     exit /b 1
 )
 
+rem ---------- 3. 运行期间守护手机连接 ----------
+rem 手机连接掉了，守护会自动「关开一次电脑热点 + 重连 adb」，不再需要手动处理。
+rem 优先用 pythonw 后台运行：没有控制台窗口，不打扰任务日志。
+set "PYW=%~dp0workbench\.venv\Scripts\pythonw.exe"
+del /q "%~dp0.runtime\watch_phone.stop" >nul 2>&1
+if exist "%PYW%" (
+    start "" "%PYW%" "%~dp0tools\watch_phone.py" --adb "%ADB%"
+) else (
+    start "手机连接守护" /min "%PY%" -u "%~dp0tools\watch_phone.py" --adb "%ADB%"
+)
+
 echo.
 echo ============================================================
 echo   淘金币任务（去赚金币）
@@ -91,6 +102,9 @@ echo ============================================================
 echo.
 
 "%PY%" -u "%~dp0run_coin.py" run --max-tasks 30 %*
+
+rem 让后台守护退出：写停止标志，守护下一轮检查到就自行结束
+"%PY%" -c "from pathlib import Path; Path(r'%~dp0.runtime\watch_phone.stop').write_text('stop', encoding='utf-8')" >nul 2>&1
 
 echo.
 echo 任务结束。

@@ -1241,7 +1241,14 @@ def confirm_page_completion(device, first_nodes, elapsed, min_duration, exclude=
     return True
 
 
-def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
+# 「全程没出现结算信号」时的兜底时间上限（秒）。使用者 2026-11-07 明确：
+# 兜底 2s 就够，不要再等 4s / 5s。看到「已得N淘金币」仍是立即收工，
+# 这段兜底只在 OCR 漏读 / 浮层错过 / 文案变化时才会用到。
+FALLBACK_GRACE_SECONDS = 2
+
+
+def execute_browse_task(device, min_duration=0, max_wait=120,
+                        extra_seconds=FALLBACK_GRACE_SECONDS):
     """
     通用浏览任务：实时扫描"滑动浏览XX秒"字样，消失即任务完成
     适用于：签到赢元宝、点淘购物赚钱、睡觉赚元宝等所有浏览类任务
@@ -1256,8 +1263,9 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     参数:
         min_duration: 无论是否检测到滑动字样，都必须满足的最小浏览时间（秒）
         max_wait: 超时上限（秒）
-        extra_seconds: 仅「全程没出现结算信号」时的兜底时间（秒）；
-                       页面显示「已得N淘金币」时立即收工，不追加
+        extra_seconds: 仅「全程没出现结算信号」时的兜底时间（秒），
+                       上限 FALLBACK_GRACE_SECONDS(2s)；页面显示
+                       「已得N淘金币」时立即收工，不追加
     返回:
         True 正常完成, False 超时
     """
@@ -1270,10 +1278,10 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
     # 立刻收工，不再追加任何保险时间（使用者要求）。只有全程没出现结算文案
     # （OCR 漏读 / 浮层错过 / 文案变化）时，才额外兜底 N 秒，保证任务做够，
     # 不会「没完成就退出」。
-    effective_extra = extra_seconds
-    task_ref_duration = min_duration if min_duration > 0 else 999
-    if task_ref_duration <= 30:
-        effective_extra = 4
+    # 无论任务标注 15s / 30s / 60s，兜底一律最多 2s（调用方显式传更大值
+    # 也封顶，避免别的任务又拖出 10s 保险时间）。旧版对 <=30s 任务硬写 4s、
+    # 其余用默认 5s，使用者已明确「兜底 2s 就够了」。
+    effective_extra = min(max(extra_seconds, 0), FALLBACK_GRACE_SECONDS)
     print(f"  ⏱️ 看到【已得N淘金币】立即收工；仅无结算信号时兜底 {effective_extra}s")
 
     # 立即下滑一次，不等页面扫描
@@ -1301,8 +1309,8 @@ def execute_browse_task(device, min_duration=0, max_wait=120, extra_seconds=5):
         match = re.search(r"滑动浏览\s*(\d+)", text)
         if match:
             detected_sec = int(match.group(1))
-            if detected_sec <= 30:
-                effective_extra = 4
+            # 兜底已在函数入口统一封顶为 FALLBACK_GRACE_SECONDS(2s)，
+            # 这里不再按倒计时秒数把 4s 写回去。
             has_sliding_text = True
             # 页面倒计时可能已减少，不能覆盖调用方要求的最低时长。
             # 保险时间不再计入「必须等满」的时长：页面一旦显示「已得N淘金币」

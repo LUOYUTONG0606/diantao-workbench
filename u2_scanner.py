@@ -279,29 +279,68 @@ def is_blacklisted(text):
 EXTERNAL_LINK_HINT_TEXTS = (
     "下个页面不受我们控制", "不受我们控制", "注意安全https", "注意安全http",
     "即将打开外部链接", "第三方页面不受", "第三方网站", "即将离开淘宝",
+    # 「打开别的应用」确认框：真机 2026-11-07 点「逛逛uc最高立得」后弹出
+    # 「正在离开手机淘宝，打开UC极速版」+【取消】【确认】。前台包名仍是淘宝，
+    # 按包名判「有没有跳出去」完全管不到，必须在 OCR 层拦下并只点【取消】。
+    # ⚠️ 只放弹窗说明文案，不放「打开App」这类可能出现在任务标题里的词。
+    "正在离开手机淘宝", "正在离开", "离开手机淘宝",
+    "打开uc极速版", "打开百度极速版", "打开头条极速版", "打开uc浏览器",
+    "打开其他应用", "打开其它应用", "打开别的应用", "是否允许打开",
+    "使用以下应用打开", "选择要打开的应用", "仅本次允许", "仅此一次",
 )
 EXTERNAL_LINK_ALLOW_TEXTS = (
     "浏览器打开", "打开链接", "立即打开", "继续访问", "前往", "允许", "用浏览器打开",
+    # 打开别的应用的放行按钮：只用于「识别弹窗 + 绝不点」。
+    # ⚠️ 不放裸「确认 / 确定 / 打开」——搜索有福利页的提交键就叫「确认」，
+    #    加进来会把正常搜索提交误判成外链弹窗（上一轮刚修好的问题）。
+    "仅本次允许", "仅此一次", "始终允许", "打开应用", "确定打开", "去打开",
+)
+# 刚拦下「打开别的应用」弹窗的一小段时间内，任何点击路径都不许碰这些词，
+# 避免搜索/弹窗关闭等其它逻辑误点【确认】把手机带出淘宝。
+OPEN_APP_CONFIRM_TEXTS = (
+    "确认", "确定", "允许", "仅本次允许", "仅此一次", "始终允许",
+    "打开uc", "打开app", "去打开", "确定打开",
 )
 EXTERNAL_LINK_CANCEL_TEXTS = ("取消", "留在此页", "留在淘宝", "暂不打开", "不了")
 _external_link_state = {"count": 0, "last_at": 0.0, "seen": False, "repeats": 0}
 
 
+def external_link_recent(within=3.0):
+    """最近 within 秒内刚拦下过「外部链接 / 打开别的应用」弹窗。"""
+    return (time.monotonic() - _external_link_state["last_at"]) < within
+
+
 def external_link_dialog(nodes):
-    """当前屏是否是「要跳到外部链接」的提示弹窗；是则返回命中的文案。"""
+    """当前屏是否是「外部链接 / 打开别的应用」提示弹窗；是则返回命中文案。
+
+    两类：① 淘宝 WebView 的站外链接提示（下个页面不受我们控制…）；
+          ② 「正在离开手机淘宝，打开UC极速版」+【取消】【确认】这类
+             「打开别的应用」确认框。使用者要求：一律只点【取消】。
+    """
     texts = [str(n.get("text", "")) for n in nodes or []]
     for t in texts:
-        if any(k in t for k in EXTERNAL_LINK_HINT_TEXTS):
+        # 大小写不敏感：OCR 可能把 UC 读成 uC / Uc。
+        if any(k in t.lower() for k in EXTERNAL_LINK_HINT_TEXTS):
             return t
-    # 说明文案没被 OCR 读全时，「浏览器打开 + 取消」同一行也视为外链确认框。
+    # 说明文案没被 OCR 读全时，放行按钮 + 取消按钮同一行也视为确认框。
     allows = [n for n in nodes or []
-              if any(k in str(n.get("text", "")) for k in EXTERNAL_LINK_ALLOW_TEXTS)]
+              if any(k in str(n.get("text", "")).lower()
+                     for k in EXTERNAL_LINK_ALLOW_TEXTS)]
     cancels = [n for n in nodes or []
                if str(n.get("text", "")).strip() in EXTERNAL_LINK_CANCEL_TEXTS]
     if allows and cancels and any(
             abs(int(a.get("cy", 0)) - int(c.get("cy", 0))) < 120
             for a in allows for c in cancels):
-        return "浏览器打开"
+        return "浏览器打开 / 打开应用"
+    # 反复弹的「打开别的应用」框说明文案可能被拆块读漏；刚拦过一次时，
+    # 「取消 + 确认」并排就继续按取消处理。搜索页不会刚拦过外链框，不误伤。
+    if external_link_recent(6.0) and cancels:
+        confirms = [n for n in nodes or []
+                    if str(n.get("text", "")).strip() in ("确认", "确定")]
+        if confirms and any(
+                abs(int(a.get("cy", 0)) - int(c.get("cy", 0))) < 120
+                for a in confirms for c in cancels):
+            return "打开别的应用"
     return ""
 
 
@@ -315,7 +354,7 @@ def _note_external_link_cancel():
 
 
 def dismiss_external_link(device, nodes):
-    """看到外部链接提示就点【取消】，绝不点「浏览器打开 / 打开 / 允许」。"""
+    """看到「外部链接 / 打开别的应用」提示就点【取消】，绝不点确认/打开/允许。"""
     hint = external_link_dialog(nodes)
     if not hint:
         _external_link_state["seen"] = False
@@ -339,15 +378,16 @@ def dismiss_external_link(device, nodes):
         n = cancels[0]
         try:
             device.click(int(n["cx"]), int(n["cy"]))
-            print(f"  ⛔ 页面要跳到外部链接，已点【{str(n['text']).strip()}】取消，不跳转")
+            print(f"  ⛔ 检测到【{hint[:24]}】，已点【{str(n['text']).strip()}】取消，"
+                  f"不打开别的应用 / 不跳转")
             handled = True
         except Exception as exc:
             print(f"  ⚠️ 点【取消】失败：{exc}")
     if not handled:
-        # 没有「取消」按钮也绝不点允许类按钮，按返回把提示关掉。
+        # 没有「取消」按钮也绝不点确认/允许类按钮，按返回把提示关掉。
         try:
             device.press("back")
-            print("  ⛔ 页面要跳到外部链接，未找到【取消】，已按返回关闭提示")
+            print("  ⛔ 打开别的应用 / 外部链接提示：未找到【取消】，已按返回关闭，不跳转")
         except Exception as exc:
             print(f"  ⚠️ 关闭外部链接提示失败：{exc}")
     # 真机上有些页面（z.toutiao.com 引导页）会反复触发站外跳转，点完取消
@@ -369,18 +409,22 @@ def quick_external_link_cancel(device):
     由 scan_page 的 OCR 路径兜底。命中就点「取消」并提前结束本项。
     """
     try:
-        hint = device(textContains="不受我们控制")
-        if not hint.exists:
-            hint = device(textContains="注意安全https")
-        if not hint.exists:
+        found = ""
+        for word in ("不受我们控制", "正在离开手机淘宝", "正在离开",
+                     "打开UC极速版", "仅本次允许"):
+            hint = device(textContains=word)
+            if hint.exists:
+                found = word
+                break
+        if not found:
             return False
         cancel = device(text="取消")
         if cancel.exists:
             cancel.click()
-            print("  ⛔ 检测到外部链接提示，已点【取消】，不跳转")
+            print(f"  ⛔ 检测到【{found}】，已点【取消】，不打开别的应用 / 不跳转")
         else:
             device.press("back")
-            print("  ⛔ 检测到外部链接提示，已按返回关闭，不跳转")
+            print(f"  ⛔ 检测到【{found}】，已按返回关闭，不打开别的应用 / 不跳转")
         _note_external_link_cancel()
         return True
     except Exception:

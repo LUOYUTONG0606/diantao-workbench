@@ -12,7 +12,8 @@ from task_exclusions import is_blocked_boutique_task
 from u2_scanner import (
     execute_browse_task, execute_live_task, execute_video_task,
     is_blacklisted, scan_page,
-    external_link_dialog, external_link_blocked_count,
+    external_link_dialog, external_link_blocked_count, external_link_recent,
+    OPEN_APP_CONFIRM_TEXTS,
 )
 from utils import TB_APP, _cloud_ocr, connect_device, ensure_local_ocr
 from utils import pause_global_watcher
@@ -65,6 +66,10 @@ BROWSE_CAP = 30
 CLICK_FORBIDDEN_TEXTS = (
     "浏览器打开", "用浏览器打开", "在浏览器打开", "打开链接", "打开外部链接",
     "立即打开", "继续访问", "下载App", "安装App",
+    # 「正在离开手机淘宝，打开UC极速版」+【取消】【确认】：放行按钮一律不点。
+    # ⚠️ 不写裸「确认 / 确定 / 打开」，搜索有福利页的提交键就叫「确认」。
+    "仅本次允许", "仅此一次", "始终允许", "打开应用", "确定打开", "去打开",
+    "打开UC", "打开Uc", "打开uc", "打开其他应用", "打开别的应用",
 )
 
 # ── 弹窗关闭（只在「点进任务之后」生效） ──────────────────
@@ -164,14 +169,30 @@ HARD_SKIP_WORDS = (
     "玩小游戏", "查看并完成", "消消乐", "斗地主", "拍立淘",
 )
 
-# 实测点进去就是淘宝外部链接引导页的任务（真机 2026-11-07：空白 WebView
-# 反复弹「下个页面不受我们控制…https://z.toutiao.com」+ 浏览器打开）。
-# 使用者明确「以后不要跳到外部链接」，所以这类任务直接不做，连点都不点。
-# 运行时新发现的外链任务会追加到 .runtime/external_link_tasks.txt，
+# ⛔ 会跳到外部应用 / 站外链接的任务：在任务列表里直接判 skip，连点都不点。
+# 使用者 2026-11-07 明确：「不要做这种会跳转到外部应用的任务」（不是
+# 「点进去之后再把确认框取消」）。真机上「逛逛uc最高立得 / 去逛uC送红包
+# 福利 / 去百度极速版领现金」点进去就弹「正在离开手机淘宝，打开UC极速版」
+# +【取消】【确认】，前台包名仍是淘宝，按包名判断拦不住，还会把脚本卡死。
+# 注意：标题里没有这些 App 名的淘宝内小程序 / H5 任务照常做，并保留
+# exec_task 的前台包名判断作为兜底（真跳出去仍会立刻退回并跳过）。
+# 若哪天发现某个词误伤了淘宝内小程序，直接从这张表里删掉该词即可。
+# 运行时新发现的任务会追加到 .runtime/external_link_tasks.txt，
 # 下次启动由 load_external_link_tasks() 自动跳过。
 KNOWN_EXTERNAL_LINK_TASKS = (
+    # 站外链接引导页（下个页面不受我们控制…https://z.toutiao.com）
     "头条极速版刷视频",
+    # UC / 浏览器 / 各类「极速版」独立 App
+    "逛逛uc", "去逛uc", "uc最高立得", "uc送红包", "uc浏览器", "夸克",
+    "qq浏览器", "浏览器", "极速版",
+    # 其它独立 App
+    "闲鱼", "支付宝", "饿了么", "美团", "拼多多", "京东", "唯品会",
+    "高德", "小红书", "快手", "抖音", "一淘", "微博", "b站", "百度",
+    "天猫", "淘宝特价版", "特价版", "蚂蚁庄园", "蚂蚁新村", "蚂蚁森林",
+    # 明确的跳转动作
+    "下载app", "安装app", "打开app", "逛一逛领购物红包",
 )
+_ext_app_skip_logged = set()   # 每个被跳过的外部应用任务只提示一次，避免刷屏
 
 # 用户明确要求做的「趣味课堂」类答题每日任务：进入后随机选一个答案（见 quiz 处理）。
 # 只放行以下明确点名的任务，不波及同类的其他屏蔽项。
@@ -213,22 +234,25 @@ def task_key(task):
 def match_task_type(task_name):
     """带浏览的任务一律尝试；只跳过明确点名/有风险的任务。
 
-    是否跳出淘宝不按标题判断（标题像外部 App 也可能是淘宝内小程序），
-    由 exec_task 在点击后按前台包名决定：真跳出去就退回并跳过该项。
+    会跳到外部应用的任务按标题提前判 skip、连点都不点（使用者 2026-11-07
+    「不要做这种会跳转到外部应用的任务」）；标题里没有外部 App 名的淘宝内
+    小程序 / H5 照常做，并保留 exec_task 的前台包名判断兜底：万一真跳出去，
+    仍会立刻退回并跳过该项。
     """
     # 趣味课堂需要答题：单独归为 quiz，进入后随机选一个答案。
     if any(kw in task_name for kw in QUIZ_TASKS):
         return "quiz"
     if is_blocked_boutique_task(task_name):
         return "skip"
-    # 已确认会跳到淘宝外部链接的任务：直接不做（连弹窗都不触发）。
-    if any(k in normalize(task_name) for k in KNOWN_EXTERNAL_LINK_TASKS):
+    # 会跳到外部应用 / 站外链接的任务：在列表里直接不做（连弹窗都不触发）。
+    # 大小写不敏感：OCR 常把「uC / UC / uc」混着读出来。
+    if any(k in normalize(task_name).lower() for k in KNOWN_EXTERNAL_LINK_TASKS):
         return "skip"
     # 用户点名不要的蚂蚁系、资金/账号风险、非浏览类：不做。
     if any(word in task_name for word in HARD_SKIP_WORDS):
         return "skip"
-    # ⛔ 不按任务标题里的 App 名拦截：使用者要求「淘宝内的小程序就可以」。
-    #    真正跳到别的 App 时，由 exec_task 按前台包名立刻退回并跳过该项。
+    # 标题不带外部 App 名的任务（含淘宝内小程序 / H5）照常分类执行；
+    # 只在点击后按前台包名兜底，真跳到别的 App 就立刻退回并跳过该项。
     if "直播" in task_name:
         return "live"
     if "视频" in task_name:
@@ -315,6 +339,12 @@ def click_node(node):
     # scan_page 里另有「外链提示自动点取消」的兜底，双保险。
     if any(w in label for w in CLICK_FORBIDDEN_TEXTS):
         print(f"  ⛔ 拒绝点击【{label}】：会跳到外部链接或安装应用")
+        return False
+    # 刚拦下「打开别的应用」弹窗的几秒内，任何点击路径都不许碰确认键：
+    # 弹窗里的【确认】与搜索页的提交【确认】文字完全一样，必须按上下文拦。
+    if external_link_recent() and any(
+            w in label.lower() for w in OPEN_APP_CONFIRM_TEXTS):
+        print(f"  ⛔ 拒绝点击【{label}】：刚拦下「打开别的应用」弹窗，避免误点确认跳转")
         return False
     cx, cy = int(node.get("cx", 0)), int(node.get("cy", 0))
     if not (0 < cx < screen_width and 0 < cy < screen_height):
@@ -745,6 +775,12 @@ def parse_task_list(nodes, include_skipped=False):
                            and 0 <= n["cy"] - title_y <= screen_height * .03)
         task_progress = progress(details)
         kind = match_task_type(name)
+        _n_lower = normalize(name).lower()
+        if (kind == "skip"
+                and any(k in _n_lower for k in KNOWN_EXTERNAL_LINK_TASKS)
+                and _n_lower not in _ext_app_skip_logged):
+            _ext_app_skip_logged.add(_n_lower)
+            print(f"  ⏭ 【{name}】会跳到外部应用，按要求不做（连点都不点）")
         if task_progress and task_progress[0] >= task_progress[1]:
             kind = "skip"
         if kind != "skip" and button["text"] in CLAIM_TEXTS:
@@ -815,7 +851,8 @@ def exec_task(task_def):
     # 点进来就要跳外部链接（如 https://z.toutiao.com）：scan_page 已自动点
     # 【取消】，这一项按用户要求不做，退回列表且本轮不再重试。
     if external_link_dialog(landed):
-        print(f"  ⛔ 【{name}】会跳到外部链接，按要求不做（已点【取消】）")
+        print(f"  ⛔ 【{name}】要打开别的应用 / 外部链接，这项不做；"
+              f"已取消弹窗并记入跳过名单，以后不再点")
         remember_external_link_task(task_key(task_def))
         invalidate_scan()
         return False
@@ -927,8 +964,12 @@ def _find_search_submit(nodes):
 
     优先「确认」（搜索有福利浮层的确认键）与右上搜索框旁的按钮，其次键盘
     右下角的「搜索」键。精确匹配短词，绝不点「搜索发现 / 搜索有福利」横幅，
-    也不碰「放弃进度」对话框里的确认。
+    也不碰「放弃进度」对话框里的确认，更不碰「打开别的应用」弹窗的【确认】。
     """
+    # 「正在离开手机淘宝，打开UC极速版」弹窗的【确认】与搜索提交键同名，
+    # 一旦命中就直接不选任何按钮（scan_page 已自动点【取消】）。
+    if external_link_dialog(nodes):
+        return None
     hits = []
     for n in nodes or []:
         t = normalize(n["text"])
@@ -1498,7 +1539,8 @@ def run_tasks(max_tasks=30):
         # 执行过程中才弹出外链提示（视频/浏览下滑到站外链接）：已取消跳转，
         # 这一项本轮不再做，也不重试，避免反复弹窗。
         if external_link_blocked_count() > link_before:
-            print(f"  ⛔ 【{task['name']}】执行中要跳外部链接，已取消；以后不再做这一项")
+            print(f"  ⛔ 【{task['name']}】执行中要打开别的应用 / 外部链接，"
+                  f"已取消；以后不做这一项")
             remember_external_link_task(key)
             finished.add(key)
             invalidate_scan()

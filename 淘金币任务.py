@@ -139,6 +139,18 @@ QUIZ_TASKS = (
 SEARCH_TERMS = ("固态硬盘", "移动硬盘", "蓝牙耳机", "牙刷", "纸巾", "牛肉干")
 _search_index = {"i": 0}
 
+# 输入关键词后必须点「搜索 / 确认」按钮才会跳到搜索内容页；这个 WebView
+# 页面上只按回车不生效（使用者 2026-11-07 反馈「不会点击确认跳转搜索的内容」）。
+SEARCH_SUBMIT_TEXTS = (
+    "确认", "确定", "去搜索", "立即搜索", "搜索一下", "搜一下", "搜索宝贝",
+    "搜索", "查找",
+)
+# 「搜索有福利」是搜索输入页的活动横幅；用它 + 输入框提示定位输入区。
+SEARCH_INPUT_HINTS = ("搜索有福利", "请输入", "想找的商品", "搜一搜", "搜索宝贝")
+# 已跳到搜索结果页的特征（要求至少 2 个，避免输入页的推荐词误判）。
+SEARCH_RESULT_TEXTS = ("综合", "销量", "筛选", "店铺", "价格", "搜索结果", "找到")
+
+
 
 def normalize(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(text)))
@@ -184,9 +196,11 @@ def match_task_type(task_name):
                                           "沉浸看", "随心逛", "看看", "参与", "做任务",
                                           "兑换", "使用")):
         return "browse"
-    # 「搜一搜」类：需要先搜索关键词
-    if "搜一搜" in task_name.replace("\u200b", "") or (
-            task_name.startswith("搜") and "宝贝" in task_name):
+    # 「搜一搜」类：需要先搜索关键词。任务可能被改名成「搜索有福利」等，
+    # 标题里带「搜索」的一律按搜索任务处理，别因分类不明直接跳过。
+    _name = task_name.replace("\u200b", "")
+    if "搜一搜" in _name or "搜索" in _name or (
+            _name.startswith("搜") and "宝贝" in _name):
         return "search"
     return "skip"
 
@@ -752,7 +766,7 @@ def exec_task(task_def):
         # 搜一搜：先真的搜一次，直接在搜索结果页浏览，不点开具体商品。
         if not do_search():
             return False
-        print("  搜索完成，在搜索结果页浏览")
+        print("  搜索已提交，开始浏览")
         # 带浏览的任务一律做：min_duration 仍以 30s 为上限，但页面若显示
         # 「滑动浏览XX秒」（例如 60 秒任务），execute_browse_task 会按真实
         # 倒计时等满，所以 max_wait 要给足，不能再固定 40s 把它截断。
@@ -841,11 +855,55 @@ def execute_quiz_task(d):
     return True
 
 
+def _find_search_submit(nodes):
+    """从 OCR 文字块里挑出「确认 / 搜索」提交按钮。
+
+    优先「确认」（搜索有福利浮层的确认键）与右上搜索框旁的按钮，其次键盘
+    右下角的「搜索」键。精确匹配短词，绝不点「搜索发现 / 搜索有福利」横幅，
+    也不碰「放弃进度」对话框里的确认。
+    """
+    hits = []
+    for n in nodes or []:
+        t = normalize(n["text"])
+        if t not in SEARCH_SUBMIT_TEXTS:
+            continue
+        cx, cy = int(n.get("cx", 0)), int(n.get("cy", 0))
+        if not (0 < cx < screen_width and 0 < cy < screen_height):
+            continue
+        # 「搜索」二字也可能是顶部横幅/标题，只认右侧或键盘区。
+        if t == "搜索" and not (cx > screen_width * 0.6
+                                or cy > screen_height * 0.6):
+            continue
+        if t in ("确认", "确定") and any(
+                any(w in normalize(m["text"]) for w in LEAVE_ABANDON_TEXTS)
+                for m in nodes or []):
+            continue
+        top_right = cx > screen_width * 0.6 and cy < screen_height * 0.35
+        hits.append((0 if t in ("确认", "确定") else 1,
+                     0 if top_right else 1, cy, n))
+    if not hits:
+        return None
+    hits.sort(key=lambda item: item[:3])
+    return hits[0][3]
+
+
+def _on_search_result_page(nodes):
+    """是否已跳到搜索内容页：倒计时浮层直接算，否则要凑够 2 个结果页特征。"""
+    texts = [normalize(n["text"]) for n in nodes or []]
+    if any("滑动浏览" in t for t in texts):
+        return True
+    return sum(1 for k in SEARCH_RESULT_TEXTS
+               if any(k in t for t in texts)) >= 2
+
+
 def do_search():
-    """在搜索页输入一个预设关键词并提交。返回是否成功。
+    """在搜索页输入关键词并点「确认 / 搜索」跳到结果页。返回是否继续浏览。
 
     为什么必须搜：这类「搜一搜你心仪的宝贝」任务要求真的发生一次搜索行为，
     只停留在页面上滑动不算完成，金币不会到账。
+    ⚠️ 旧版只按 d.press("enter")，在「搜索有福利」这个 WebView 页面上
+    不会跳转，日志会假装「搜索完成」却一直不计进度。现在改成 OCR 定位
+    「确认 / 搜索」按钮点击，并复核是否真的进了搜索结果页。
     """
     field = None
     for _ in range(6):   # 搜索页有时加载慢，等输入框出现
@@ -858,22 +916,63 @@ def do_search():
             pass
         time.sleep(SETTLE_PAGE)
 
+    # WebView 搜索页可能没有原生 EditText：OCR 找「搜索有福利 / 请输入」点出输入框。
     if field is None:
-        print("  未定位到唯一的搜索输入框，本项跳过")
-        return False
+        nodes = read_page(force=True)
+        hint = next((n for n in nodes
+                     if any(k in normalize(n["text"]) for k in SEARCH_INPUT_HINTS)), None)
+        if hint and click_node(hint):
+            invalidate_scan()
+            time.sleep(SETTLE_PAGE)
+            field = "ocr"
+        else:
+            print("  未定位到搜索输入框，本项跳过")
+            return False
 
     keyword = SEARCH_TERMS[_search_index["i"] % len(SEARCH_TERMS)]
     _search_index["i"] += 1
     print(f"  搜索关键词：{keyword}")
     try:
         invalidate_scan()
-        field.click()
-        time.sleep(0.3)
+        if field != "ocr":
+            field.click()
+            time.sleep(0.3)
         d.send_keys(keyword, clear=True)
         time.sleep(0.3)
-        d.press("enter")
         invalidate_scan()
-        time.sleep(1.0)
+
+        # ⚠️ 只按 enter 不跳转：优先 OCR 点「确认 / 搜索」，找不到才回车兜底。
+        before_texts = set()
+        for attempt in range(3):
+            invalidate_scan()
+            time.sleep(0.4)
+            nodes = read_page(force=True)
+            now_texts = {normalize(n["text"]) for n in nodes}
+            if attempt:
+                # 结果页不一定 OCR 得到「综合 / 销量」，用「页面文字大量更新」
+                # 兜底，避免把已跳走的页面当成没跳而重复提交、重置倒计时。
+                if _on_search_result_page(nodes) or len(now_texts - before_texts) >= 3:
+                    print("  ✅ 已跳转到搜索结果页")
+                    return True
+            before_texts = now_texts
+            btn = _find_search_submit(nodes)
+            if btn is not None:
+                print(f"  ↗ 点击【{normalize(btn['text'])}】提交搜索，等待跳转…")
+                if click_node(btn):
+                    invalidate_scan()
+                    time.sleep(1.2)
+                    continue
+            print("  ⌨ 未识别到搜索按钮，按回车提交")
+            d.press("enter")
+            invalidate_scan()
+            time.sleep(1.2)
+
+        invalidate_scan()
+        if _on_search_result_page(read_page(force=True)):
+            print("  ✅ 已跳转到搜索结果页")
+        else:
+            # 不直接判失败：仍继续浏览，到账与否由主循环「今日速赚增量」复核。
+            print("  ⚠️ 未确认跳转到搜索结果页，继续浏览（由主循环核对到账）")
         return True
     except Exception as exc:
         print(f"  搜索输入失败：{exc}")

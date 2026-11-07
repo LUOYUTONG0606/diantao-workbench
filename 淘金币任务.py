@@ -52,14 +52,11 @@ MAX_EXPAND_CLICKS = 6
 EXPAND_RETRY_GAP = 6.0  # 同一位置的展开按钮 6s 内不重复点，避免点了没效果时空转
 _last_expand = {"pos": None, "at": 0.0}
 # 浏览/观看类任务的「无倒计时页面」兜底时长上限（秒）。使用者要求浏览最长 30s。
-# 任务要求的真实时长超过此上限时不再整项跳过（使用者要求带浏览的都做）：
+# 任务要求的真实时长超过此上限时不再整项跳过（带浏览的任务都做）：
 # 页面自带「滑动浏览XX秒」倒计时时按真实秒数做满，出现「已得N淘金币」立即
 # 收工；没有倒计时的页面才按 30s 兜底，避免被强制退出导致进度不计入。
+# 注意：任务若真的跳到别的 App 会直接退回并跳过，不会在外部 App 里浏览。
 BROWSE_CAP = 30
-# 跳转到外部 App 后看不到淘宝的倒计时 /「已得N淘金币」结算浮层，只能按任务
-# 标注的时长停留（如「逛逛uC 60秒」就待满 60s），否则一回来必定判未完成。
-# 站内浏览仍受 BROWSE_CAP=30s 约束，这里只对「会跳转」的任务放宽。
-EXTERNAL_BROWSE_CAP = 90
 # ── 弹窗关闭（只在「点进任务之后」生效） ──────────────────
 # 真机实测：「充值大礼包 / 首充礼包」这类浮层给一个底部居中的「X」
 # （1260x2800 屏上 x=633, y=2111）和顶部「跳过」。
@@ -102,29 +99,27 @@ RECOVER_WAIT = 45         # 等待淘宝回到前台的最长秒数（期间任�
 MAX_RECOVER_FAILURES = 4  # 连续恢复失败次数上限
 LEAVE_DIALOG_LIMIT = 2    # 「放弃进度」对话框最多拦几次，避免无限留在页面
 
-# ── 带浏览的任务一律做，包括会跳转到其他 App 的 ──────────────
-# 使用者 2026-11-07 明确：「带有浏览的任务都做，不管要不要跳转」。
-# 旧版只要标题里出现别的 App 名就 return "skip"（如「逛逛uC最高立得」），
-# 现在这些词只用于「标记这是一项会跳转的任务」，不再构成跳过理由；
-# 跳出去之后由 exec_task 按前台包名自适应地在外部 App 里完成浏览再回淘宝。
-JUMP_APP_WORDS = (
+# ── 不要转到别的应用去，淘宝内的小程序可以 ────────────────────
+# 使用者 2026-11-07 明确：不要真的切到别的 App；但淘宝内打开的小程序 /
+# H5 页面照常做。所以判定依据是「点击后的前台包名」，不是任务标题 ——
+# 标题里带「UC / 闲鱼 / 天猫」也可能是淘宝内小程序，不能一刀切跳过。
+# 下面这些词只用于日志提示，不构成跳过条件。
+APP_HINT_WORDS = (
     "支付宝", "蚂蚁森林", "蚂蚁庄园", "蚂蚁新村", "蚂蚁", "金豆", "芝麻信用",
     "微博", "闲鱼", "快手", "抖音", "一淘", "淘宝特价版", "特价版", "天猫", "百度",
     "饿了么", "美团", "拼多多", "京东", "唯品会", "高德", "小红书", "b站",
     "下App", "下载App", "安装App", "打开App",
     "uC", "UC", "UC浏览器", "夸克", "QQ浏览器", "浏览器",
 )
-# 标题里看不出目标 App、但实测会跳转的任务，同样只做标记
-JUMP_APP_TITLES = (
+APP_HINT_TITLES = (
     "逛一逛领购物红包",   # 天猫
 )
-# 兼容旧引用（其它脚本/配置若按老名字取值仍可用）
-EXTERNAL_APP_WORDS = JUMP_APP_WORDS
-EXTERNAL_APP_TITLES = JUMP_APP_TITLES
+
+# 本轮已确认「点了会跳到别的 App」的任务：直接跳过、不再重试。
+_external_skipped = set()
 
 # 仍然不做：用户点名不要的蚂蚁系 + 资金/账号风险 + 非浏览类。
-# 注意「支付」不能作为子串写在这里，否则「支付宝」的浏览任务会被误杀；
-# 跳转本身不再构成跳过理由。
+# 注意「支付」不能作为子串写在这里，否则「支付宝」的浏览任务会被误杀。
 HARD_SKIP_WORDS = (
     "蚂蚁庄园", "蚂蚁新村", "蚂蚁森林", "喂鸡", "果园",
     "下单", "购买", "充值", "付款", "支付订单", "立即支付", "开通", "授权",
@@ -132,11 +127,6 @@ HARD_SKIP_WORDS = (
     "抽奖", "猜价格", "猜一猜", "猜谜", "答题", "课堂", "考试",
     "玩小游戏", "查看并完成", "消消乐", "斗地主", "拍立淘",
 )
-
-# 淘宝内「正在跳转」引导页 / 系统「打开应用」确认框上的放行按钮。
-JUMP_CONFIRM_TEXTS = ("仅本次允许", "仅此一次", "允许", "打开", "确定打开", "继续跳转")
-# 绝不点下载/安装/取消：那会把任务带进安装流程或直接放弃跳转。
-JUMP_BLOCK_TEXTS = ("下载", "安装", "取消", "拒绝", "禁止", "不再询问")
 
 # 用户明确要求做的「趣味课堂」类答题每日任务：进入后随机选一个答案（见 quiz 处理）。
 # 只放行以下明确点名的任务，不波及同类的其他屏蔽项。
@@ -164,7 +154,11 @@ def task_key(task):
 
 
 def match_task_type(task_name):
-    """带浏览的任务一律做（含跳转到其他 App）；只跳过明确点名/有风险的任务。"""
+    """带浏览的任务一律尝试；只跳过明确点名/有风险的任务。
+
+    是否跳出淘宝不按标题判断（标题像外部 App 也可能是淘宝内小程序），
+    由 exec_task 在点击后按前台包名决定：真跳出去就退回并跳过该项。
+    """
     # 趣味课堂需要答题：单独归为 quiz，进入后随机选一个答案。
     if any(kw in task_name for kw in QUIZ_TASKS):
         return "quiz"
@@ -173,10 +167,8 @@ def match_task_type(task_name):
     # 用户点名不要的蚂蚁系、资金/账号风险、非浏览类：不做。
     if any(word in task_name for word in HARD_SKIP_WORDS):
         return "skip"
-    # ⛔ 旧逻辑在这里按 EXTERNAL_APP_WORDS / EXTERNAL_APP_TITLES 直接
-    #    return "skip"（「打开别的应用的任务不要做」）。使用者已改为
-    #    「带有浏览的任务都做，不管要不要跳转」，所以这里不再拦截；
-    #    跳出去之后由 exec_task 在外部 App 里完成浏览再回淘宝。
+    # ⛔ 不按任务标题里的 App 名拦截：使用者要求「淘宝内的小程序就可以」。
+    #    真正跳到别的 App 时，由 exec_task 按前台包名立刻退回并跳过该项。
     if "直播" in task_name:
         return "live"
     if "视频" in task_name:
@@ -686,103 +678,16 @@ def parse_task_list(nodes, include_skipped=False):
         duration = re.search(r"(\d+)(秒|分钟)", details)
         seconds = int(duration[1]) * (60 if duration[2] == "分钟" else 1) if duration else 60
         _name_lower = normalize(name).lower()
-        external = (any(word.lower() in _name_lower for word in JUMP_APP_WORDS)
-                    or normalize(name) in JUMP_APP_TITLES)
+        app_hint = (any(word.lower() in _name_lower for word in APP_HINT_WORDS)
+                    or normalize(name) in APP_HINT_TITLES)
         task = dict(name=name, type=kind, cx=button["cx"], cy=button["cy"],
                     progress=task_progress, seconds=seconds, click_text=button["text"],
-                    external=external)
+                    app_hint=app_hint)
         key = task_key(task)
         if key not in seen and (include_skipped or kind != "skip"):
             seen.add(key)
             results.append(task)
     return results
-
-
-def confirm_external_jump():
-    """点掉淘宝内「正在跳转…」/ 系统「打开XX」确认框，让跳转真的发生。
-
-    只点明确的允许/打开类按钮，绝不点「下载 / 安装 / 取消 / 拒绝」。
-    没有引导页文案时什么都不做，避免误点页面上的正常按钮。
-    """
-    try:
-        nodes = scan_page(d)
-    except Exception:
-        return False
-    texts = [normalize(n["text"]) for n in nodes]
-    guide = ("正在跳转", "即将打开", "打开应用", "仅本次允许", "仅此一次", "要打开")
-    pkg = _pkg_once() or ""
-    # 系统权限框/应用选择框的文字不一定是「正在跳转」，但一定要先点允许，
-    # 否则后面的浏览会一直滑在弹窗上白等。
-    system_picker = any(k in pkg for k in ("permission", "resolver", "android", "systemui"))
-    if not system_picker and not any(any(k in t for k in guide) for t in texts):
-        return False
-    for n in nodes:
-        t = normalize(n["text"])
-        if any(b in t for b in JUMP_BLOCK_TEXTS):
-            continue
-        if t in JUMP_CONFIRM_TEXTS or any(k in t for k in JUMP_CONFIRM_TEXTS):
-            print(f"  ↗ 跳转确认：点击【{t}】继续打开外部应用")
-            if click_node(n):
-                time.sleep(SETTLE_PAGE * 2)
-                return True
-    return False
-
-
-def browse_external_app(seconds):
-    """在跳转后的外部 App 里把浏览做完：只滑动，不点任何业务按钮。
-
-    外部 App 看不到淘宝侧的倒计时或「已得N淘金币」浮层，因此按任务标注的
-    时长停留（站内浏览仍按 30s 上限）；页面若自带「滑动浏览XX秒」倒计时，
-    则由 execute_browse_task 按实际秒数做满。
-    """
-    secs = int(seconds or 0)
-    duration = min(max(secs, 15), EXTERNAL_BROWSE_CAP)
-    max_wait = min(max(secs + 20, 45), 110)
-    print(f"  ↗ 外部应用内浏览 {duration}s（超时上限 {max_wait}s），只滑动不点按钮")
-    try:
-        return execute_browse_task(d, min_duration=duration, max_wait=max_wait)
-    except Exception as exc:
-        print(f"  外部应用浏览异常：{exc}，改为原地等待 {duration}s")
-        time.sleep(duration)
-        return False
-
-
-def return_from_external_app(timeout=RECOVER_WAIT):
-    """浏览结束后回淘宝：优先点「返回淘宝」，再按返回，最后才拉起淘宝。"""
-    if taobao_on_top(confirm=2, interval=0.5):
-        return True
-    try:
-        for n in scan_page(d):
-            t = normalize(n["text"])
-            if any(k in t for k in ("返回淘宝", "回淘宝", "返回淘金币", "回到淘宝")):
-                print(f"  ↩ 点击【{t}】回淘宝")
-                click_node(n)
-                time.sleep(SETTLE_PAGE)
-                break
-    except Exception:
-        pass
-    deadline = time.monotonic() + timeout
-    backs = 0
-    while time.monotonic() < deadline:
-        if taobao_on_top(confirm=2, interval=0.5):
-            print("  ✅ 已回到淘宝，交给主循环核对到账")
-            invalidate_scan()
-            return True
-        if backs < 3:
-            backs += 1
-            try:
-                press_back()
-            except Exception:
-                pass
-            time.sleep(SETTLE_BACK)
-            continue
-        try:
-            ensure_taobao(timeout=15)
-        except Exception as exc:
-            print(f"  带回淘宝时出错：{exc}")
-        time.sleep(SETTLE_PAGE)
-    print("  ⚠ 未能自动回到淘宝，交给主循环统一恢复")
-    return False
 
 
 def exec_task(task_def):
@@ -798,23 +703,33 @@ def exec_task(task_def):
              and task["type"] == kind and task["progress"] == task_def.get("progress")]
     if len(fresh) != 1 or not click_node(fresh[0]):
         return False
-    # 点击之后先看落在哪儿。使用者要求「带有浏览的任务都做，不管要不要跳转」：
-    # 真跳到别的 App 不再立刻退回/跳过，而是在那个 App 里把浏览做完再回淘宝，
-    # 到账与否仍由主循环统一核对。多次确认是为了过滤 Activity 切换的抖动。
+    # 点击之后先看落在哪儿。使用者要求：不要转到别的应用去，但淘宝内的
+    # 小程序 / H5 页面照常做。判定依据是前台包名，不是标题：
+    #   - 仍是 com.taobao.taobao（含 :子进程 / 小程序容器）→ 正常做；
+    #   - 真变成别的包名 → 立刻退回淘宝，这一项不做、也不再重试。
+    # 多次确认 + 一次额外等待，过滤 Activity 切换与小程序启动时的短暂抖动。
     time.sleep(SETTLE_CLICK)
-    in_taobao = taobao_on_top(confirm=2, interval=0.6)
-    if not in_taobao:
-        # 可能还停在淘宝内/系统的「正在跳转」「仅本次允许」确认框，点确认继续跳。
-        if confirm_external_jump():
-            in_taobao = taobao_on_top(confirm=2, interval=0.6)
-    if not in_taobao:
+    if not taobao_on_top(confirm=2, interval=0.6):
+        time.sleep(0.8)
+    if not taobao_on_top(confirm=TAOBAO_CONFIRM, interval=0.5):
         current = _pkg_once()
-        print(f"  ↗ 已跳到其他应用（{current}），按要求继续在这个应用里浏览")
-        result = browse_external_app(fresh[0]["seconds"])
-        # 浏览完回淘宝：先点「返回淘宝」或按返回，实在不行才拉起淘宝。
-        return_from_external_app()
+        print(f"  ⛔ 已跳到别的应用（{current}），按要求不做这一项，立即退回淘宝")
+        _external_skipped.add(task_key(task_def))
+        # 系统「打开其它应用」确认框也按返回取消，绝不点允许/打开。
+        for _ in range(3):
+            if taobao_on_top(confirm=2, interval=0.4):
+                break
+            try:
+                press_back()
+            except Exception:
+                pass
+            time.sleep(SETTLE_BACK)
+        if not taobao_on_top(confirm=2, interval=0.5):
+            recover_taobao_front()
         invalidate_scan()
-        return result
+        return False
+    if task_def.get("app_hint"):
+        print("  ℹ 仍在淘宝内（小程序 / H5），照常做这个浏览任务")
 
     if kind in ("claim", "visit"):
         return True
@@ -1290,6 +1205,7 @@ def run_tasks(max_tasks=30):
         # 把顶部任务整批滚出屏幕（上次「还有好几个任务没做」的成因之一）。
         tasks = [t for t in parse_task_list(nodes)
                  if task_key(t) not in finished
+                 and task_key(t) not in _external_skipped
                  and attempts.get(task_key(t), 0) < MAX_ATTEMPTS
                  and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
         print(f"  [扫描] 可见 {len(nodes)} 块文字，可执行 {len(tasks)} 个任务")
@@ -1301,6 +1217,7 @@ def run_tasks(max_tasks=30):
                 nodes = read_page(force=True)
                 tasks = [t for t in parse_task_list(nodes)
                          if task_key(t) not in finished
+                         and task_key(t) not in _external_skipped
                          and attempts.get(task_key(t), 0) < MAX_ATTEMPTS
                          and (not t["progress"] or t["progress"][0] >= confirmed_progress.get(task_key(t), 0))]
             if not tasks:
@@ -1394,11 +1311,10 @@ def run_tasks(max_tasks=30):
         sweep_empty = 0
         task = tasks[0]
         key = task_key(task)
-        # 使用者要求「带有浏览的任务都做」：不再因为要求时长 > 30s 就整项跳过，
-        # 也不再因为会跳转外部应用就不点。单次兜底浏览仍以 30s 为上限，
-        # 页面自带倒计时时按真实秒数做满，出现「已得N淘金币」立即收工。
-        if task.get("external"):
-            print(f"  ↗ 【{task['name']}】会跳转外部应用，按要求照做")
+        # 「带有浏览的任务都做」：不再因为要求时长 > 30s 就整项跳过；
+        # 是否跳出淘宝由 exec_task 按前台包名决定，标题不作跳过依据。
+        # 单次兜底浏览仍以 30s 为上限，页面自带倒计时时按真实秒数做满，
+        # 出现「已得N淘金币」立即收工。
         attempts[key] = attempts.get(key, 0) + 1
         total += 1
         before_coins = today_coins(nodes)

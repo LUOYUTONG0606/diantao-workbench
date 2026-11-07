@@ -7,15 +7,18 @@ Windows 移动热点不转发 mDNS 广播，所以工作台的扫码发现 / `ad
 (adbkey 仍在)，端口变了也不必重新扫码配对。
 
     python tools/reconnect_phone.py [--adb <adb.exe>] [--stabilize]
+    python tools/reconnect_phone.py [--adb <adb.exe>] --hotspot-first --stabilize
 
 已有可用设备时直接返回；否则先试上次成功的地址，再扫端口。
-一次扫描仍连不上（= 手机连接掉了）时，会把电脑的移动热点**关一次再开**
-（WinRT Start/StopTetheringAsync），等手机重新关联后再扫一遍。本机实测：
-On -> Stop(Success) -> Off -> Start(Success) -> On，SSID 会重新广播。
+加 --force-hotspot（任务启动阶段）或 --hotspot-first（任务运行中掉线）时，
+**先**把电脑移动热点关一次再开（WinRT Start/StopTetheringAsync），
+等手机重新关联后再扫一遍。本机实测：On -> Stop(Success) -> Off ->
+Start(Success) -> On，SSID 会重新广播。运行中掉线由 watch_phone.py 守护
+带上 --hotspot-first，保证进行中掉线与启动阶段一样「先关开热点」。
 
-开关热点有副作用（会踢掉所有客户端），因此有 120s 冷却、每次运行最多一次、
-且必须确认最终状态回到 On；失败会明确报错，不会把热点留在关闭状态。
-加 --no-hotspot 可完全禁用这一步。
+开关热点有副作用（会踢掉所有客户端），因此启动阶段忽略冷却、运行中 45s 冷却、
+常规兜底 120s 冷却，每次运行最多一次、且必须确认最终状态回到 On；
+失败会明确报错，不会把热点留在关闭状态。加 --no-hotspot 可完全禁用这一步。
 """
 from __future__ import annotations
 
@@ -41,6 +44,9 @@ ADB_TIMEOUT = 12
 
 # 热点自愈参数：冷却避免反复开关；重启后最多等这么久让手机重新关联。
 HOTSPOT_COOLDOWN = 120
+# 「任务进行中掉线」专用冷却：比启动阶段短，保证掉线时基本能真的关开一次；
+# 又比不设冷却安全——反复关开热点会把手机反复踢下线，反而连不回来。
+RUNTIME_HOTSPOT_COOLDOWN = 45
 HOTSPOT_WAIT = 25
 
 # 手机连「无互联网」的电脑热点时，Android 会判定 WiFi 不可用 → 切移动数据、
@@ -348,15 +354,15 @@ def hotspot_state():
     return hit.group(1) if hit else "Unknown"
 
 
-def hotspot_cooldown_active():
+def hotspot_cooldown_active(cooldown=HOTSPOT_COOLDOWN):
     try:
         last = float(HOTSPOT_TS.read_text(encoding="utf-8").strip())
     except Exception:
         return False
-    left = HOTSPOT_COOLDOWN - (time.time() - last)
+    left = cooldown - (time.time() - last)
     if left > 0:
-        print(f"[热点] 距上次重新开关热点仅 {HOTSPOT_COOLDOWN - left:.0f}s，"
-              f"冷却中（{left:.0f}s 后可再来），本次跳过")
+        print(f"[热点] 距上次重新开关热点仅 {cooldown - left:.0f}s，"
+              f"冷却中（{left:.0f}s 后可再来，本次冷却 {cooldown}s），本次跳过", flush=True)
         return True
     return False
 
@@ -369,17 +375,18 @@ def mark_hotspot_restart():
         pass
 
 
-def toggle_hotspot(force=False):
+def toggle_hotspot(force=False, cooldown=HOTSPOT_COOLDOWN):
     """把电脑移动热点关一次再开。返回最终是否确实回到 On（广播中）。
 
     安全性：只有当前 On 才 Stop；Start 失败会再试一次；仍失败则重启 icssvc
     并复核状态。无论结果如何都写冷却时间戳，避免反复把热点开来开去。
-    force=True 用于「任务启动时一台设备都没有」：忽略 120s 冷却（那是给
-    运行期守护防抖用的），但仍保持每次运行最多一次、且必须回到 On。
+    force=True 用于「任务启动时一台设备都没有」：忽略冷却（那是给运行期
+    守护防抖用的），但仍保持每次运行最多一次、且必须回到 On。
+    cooldown 可缩短：任务进行中掉线用 RUNTIME_HOTSPOT_COOLDOWN=45s。
     """
     if os.name != "nt":
         return False
-    if not force and hotspot_cooldown_active():
+    if not force and hotspot_cooldown_active(cooldown):
         return False
     if force:
         print("[热点] 任务启动时检测不到设备，忽略冷却，电脑移动热点关一次再开…", flush=True)
@@ -460,6 +467,8 @@ def main():
                         help="连不上时不自动关开电脑热点（默认会自动开关一次）")
     parser.add_argument("--force-hotspot", action="store_true",
                         help="任务启动阶段使用：忽略 120s 冷却，连不上必定关开一次热点（每次运行仍最多一次）")
+    parser.add_argument("--hotspot-first", action="store_true",
+                        help="任务运行中掉线使用：先关开一次电脑热点再扫端口（45s 冷却防抖，每次运行最多一次）")
     args = parser.parse_args()
     adb_path = args.adb if os.path.isfile(args.adb) else "adb"
 
@@ -472,7 +481,9 @@ def main():
 
     print("[重连] adb 里没有任何设备，开始自动找回手机…", flush=True)
     cached = CACHE.read_text(encoding="utf-8").strip() if CACHE.is_file() else ""
-    if cached:
+    # 任务运行中掉线：使用者要求「也先重新开关一次热点」，所以跳过缓存直连，
+    # 直接进热点优先分支；启动阶段仍先试缓存地址（能连上就不必踢掉手机）。
+    if cached and not args.hotspot_first:
         print(f"[重连] 先试上次成功的地址 {cached}（约 1~12 秒）…", flush=True)
         if try_endpoint(adb_path, cached, args.stabilize):
             return 0
@@ -487,16 +498,23 @@ def main():
     hotspot_done = False
     hotspot_attempted = False   # 每次运行最多关开一次，失败也不重试
 
-    # ── 任务启动阶段（--force-hotspot）：先关开热点，再去扫端口 ──
+    # ── 热点优先（启动阶段 --force-hotspot / 运行中掉线 --hotspot-first）──
     # 旧顺序是「先扫 2 万个端口（20~40s）→ 全失败才关热点」，前面几十秒日志
     # 一片空白，用户会以为脚本没关热点、甚至中途点停止把重连进程整棵树杀掉，
     # 结果热点永远没被关过（.runtime/hotspot_restart.ts 都不存在）。
-    # 启动阶段用户要的就是「没设备就重新开关一次热点」，所以把它提到最前面，
-    # 关开过程还逐行实时输出，几秒内就能在 Windows 热点磁贴上看到变化。
-    if args.force_hotspot and not args.no_hotspot:
-        print("[启动自愈] 没检测到设备 → 现在就关开一次电脑移动热点…", flush=True)
+    # 现在启动与「任务进行中掉线」都把热点开关提到最前面，关开过程逐行实时输出，
+    # 几秒内就能在 Windows 热点磁贴和工作台执行日志里看到变化。
+    hotspot_first = args.force_hotspot or args.hotspot_first
+    if hotspot_first and not args.no_hotspot:
+        if args.hotspot_first:
+            print("[运行自愈] 任务进行中手机连接掉了 → 现在就关开一次电脑移动热点…", flush=True)
+        else:
+            print("[启动自愈] 没检测到设备 → 现在就关开一次电脑移动热点…", flush=True)
         hotspot_attempted = True
-        hotspot_done = toggle_hotspot(force=True)
+        hotspot_done = toggle_hotspot(
+            force=args.force_hotspot,
+            cooldown=RUNTIME_HOTSPOT_COOLDOWN if args.hotspot_first else HOTSPOT_COOLDOWN,
+        )
         if hotspot_done:
             back = wait_phone_back(prefixes, ips)
             rescan_ips = back or ips
@@ -506,10 +524,13 @@ def main():
             if connected:
                 return 0
         else:
-            print("  ⚠ 热点没能关开成功，继续按常规方式扫描端口", flush=True)
+            # 运行中掉线多数是「刚关过热点、手机还没回来」的冷却期；此时不重复
+            # 开关（反复踢手机反而更连不上），直接扫端口找回它，并在日志里说清楚。
+            print("  [热点] 本次未再关开（刚关过仍在冷却，或开关未成功），"
+                  "直接按常规方式扫描端口找回手机", flush=True)
 
     # 常规流程：热点已优先关开过就不再重复扫描，否则先扫一次端口。
-    if not connected and not (args.force_hotspot and hotspot_done):
+    if not connected and not (hotspot_first and hotspot_done):
         if not ips:
             print("[扫描] 热点网段里没有设备，手机可能已被热点停播踢掉", flush=True)
             connected, alive2, opened2 = False, [], False
@@ -521,7 +542,8 @@ def main():
         alive = alive2 or alive
         opened = opened or opened2
 
-    # 运行期守护：扫描失败后才关开热点再重扫（每次运行最多关开一次）。
+    # 未走「热点优先」的调用（如手动双击 重连手机.cmd）：扫描失败后才关开热点
+    # 再重扫（每次运行最多关开一次）。带 --hotspot-first 的守护已在最前面关过。
     if not connected and not args.no_hotspot and not hotspot_attempted and toggle_hotspot():
         back = wait_phone_back(prefixes, ips)
         rescan_ips = back or ips

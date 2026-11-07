@@ -2,12 +2,17 @@
 """任务运行期间的手机连接守护。
 
 每 12 秒看一次 `adb devices`；连续确认掉线后，调用 reconnect_phone.py
-（它会把电脑移动热点关一次再开、等手机重新关联、再重扫无线调试端口）。
+带 --hotspot-first：**先**把电脑移动热点关一次再开、等手机重新关联、
+再重扫无线调试端口（和任务启动阶段一样，不再等 20~40s 长扫描失败后才关）。
 本脚本只管「连接」，不碰淘金币任务.py 的任何逻辑，因此不会影响任务本身。
 
-由「启动淘金币.cmd」在设备检查通过后启动；任务结束写入
-`.runtime/watch_phone.stop` 标志，守护看到即退出。日志在
-`.runtime/watch_phone.log`，用 pythonw 运行时无控制台窗口。
+由「启动淘金币.cmd」或工作台在任务启动时拉起；任务结束写入
+`.runtime/watch_phone.stop` 标志，守护看到即退出。日志同时写
+`.runtime/watch_phone.log` 和 stdout（工作台把 stdout 接进「执行日志」，
+所以进行中掉线的每一步都能在页面上看到）；pythonw 运行时无控制台窗口。
+
+若旧守护还占着单实例锁，新守护会写停止标志请它退出、最多等 16s 接管，
+避免「改了代码却还是上一版守护在跑」。
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -29,22 +35,33 @@ LOCK_ADDR = ("127.0.0.1", 47831)
 _LOCK_SOCKET = None
 
 
-def acquire_single_instance():
+def acquire_single_instance(wait_seconds=16):
     """用本机端口做进程锁：cmd 与工作台可能都想起守护，只留一个。
 
-    持有 socket 直到进程退出，第二个实例 bind 失败即秒退，
-    避免两个守护同时把电脑热点开来开去。
+    锁被旧守护占着时不再秒退（否则改了代码、跑的还是上一版守护）：
+    写停止标志请旧守护退出，最多等 wait_seconds 秒接管；超时才放弃。
+    接管成功后 main() 会清掉停止标志，避免自己一启动就退出。
     """
     global _LOCK_SOCKET
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(LOCK_ADDR)
-        sock.listen(1)
-    except OSError:
-        sock.close()
-        return False
-    _LOCK_SOCKET = sock
-    return True
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(LOCK_ADDR)
+            sock.listen(1)
+        except OSError:
+            sock.close()
+            if time.monotonic() >= deadline:
+                return False
+            try:
+                STOP_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                STOP_FLAG.write_text("stop", encoding="utf-8")
+            except OSError:
+                pass
+            time.sleep(1)
+            continue
+        _LOCK_SOCKET = sock
+        return True
 
 
 def log(message):
@@ -72,23 +89,52 @@ def online_devices(adb_path):
 
 
 def recover(adb_path):
-    """同步跑一次重连（含热点关开），把输出落到守护日志便于排查。"""
+    """任务进行中掉线：先关开一次电脑热点再扫端口，输出逐行实时进日志。"""
     py = str(CONSOLE_PY) if CONSOLE_PY.is_file() else sys.executable
-    log("调用重连脚本（会关开一次电脑热点）…")
+    log("任务进行中手机连接掉了 → 现在就重新开关一次电脑热点（和启动时一样优先）…")
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)  # 跨 venv 子进程不能继承宿主的包搜索路径
+    env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+    command = [py, "-u", str(RECONNECT), "--adb", adb_path,
+               "--hotspot-first", "--stabilize"]
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
-        result = subprocess.run(
-            [py, "-u", str(RECONNECT), "--adb", adb_path],
-            capture_output=True, timeout=300,
+        proc = subprocess.Popen(
+            command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            creationflags=flags,
         )
-        text = (result.stdout + result.stderr).decode("utf-8", errors="replace")
-        for line in text.splitlines():
+    except OSError as exc:
+        log(f"重连脚本启动失败：{exc}")
+        return
+
+    def _kill_when_stuck():
+        try:
+            if proc.poll() is None:
+                proc.kill()
+                log("  ⚠ 重连脚本超过 5 分钟，已强制结束")
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(300, _kill_when_stuck)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\r\n")
             if line.strip():
-                log("  | " + line.rstrip()[:200])
-        log(f"重连脚本退出码 {result.returncode}")
-    except subprocess.TimeoutExpired:
-        log("重连脚本超时（5 分钟），放弃本次恢复")
+                log("  | " + line[:200])
+        proc.wait()
+        log(f"重连脚本退出码 {proc.returncode}")
     except Exception as exc:
         log(f"重连脚本异常：{type(exc).__name__}: {exc}")
+    finally:
+        watchdog.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
 
 
 def main():
@@ -99,7 +145,14 @@ def main():
     args = parser.parse_args()
     adb_path = args.adb if os.path.isfile(args.adb) else "adb"
     if not acquire_single_instance():
-        log("已有手机连接守护在运行，本实例退出（避免两个守护同时开关热点）")
+        # 等不到锁时撤掉接管用的停止标志：别让旧守护稍后读到它退出，
+        # 却没人接班（旧守护正卡在重连里时最容易出现这种「守护真空」）。
+        try:
+            STOP_FLAG.unlink()
+        except OSError:
+            pass
+        log("旧守护 16s 内没让出连接锁，本实例退出（避免两个守护同时开关热点）；"
+            "旧守护继续负责连接，如需新版守护请重启工作台或结束旧的 watch_phone.py 进程")
         return 0
     try:
         STOP_FLAG.unlink()
@@ -109,7 +162,8 @@ def main():
         pass
 
     deadline = time.monotonic() + args.max_minutes * 60
-    log(f"守护启动（每 {args.interval}s 检查一次，最长 {args.max_minutes} 分钟）")
+    log(f"守护启动（每 {args.interval}s 检查一次，最长 {args.max_minutes} 分钟；"
+        f"运行中掉线会先关开一次电脑热点再扫端口）")
     while time.monotonic() < deadline:
         if STOP_FLAG.exists():
             log("收到停止标志，退出")

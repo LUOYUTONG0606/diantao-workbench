@@ -51,6 +51,25 @@ MAX_EXPAND_CLICKS = 2   # 本轮最多展开两次；已展开状态显示「收
 # 任务要求的真实时长超过此上限时，直接跳过（不进入、不截断），
 # 否则会被 30s 强制退出 → 淘金币判定「未完成/进度不计入」即「自动取消进度」。
 BROWSE_CAP = 30
+# ── 弹窗关闭 ────────────────────────────────────────────
+# 真机实测：「充值大礼包 / 首充礼包」这类全屏浮层只给一个底部居中的「X」
+# （1260x2800 屏上 x=633, y=2111）和顶部「跳过」。旧关键词表不认，弹窗
+# 会整屏盖住任务列表 → OCR 每屏都读不到任务行 →「可执行 0 个任务」空转。
+# 使用者要求：看到这种弹窗点 X 关掉即可，绝不点「一键领取 / 去完成」。
+POPUP_X_TEXTS = ("X", "x", "×", "✕", "✖", "✗", "✘", "╳")
+POPUP_CLOSE_TEXTS = (
+    "跳过", "跳过广告", "关闭", "关闭弹窗", "我知道了", "知道了",
+    "稍后再说", "暂不", "以后再说", "不再提示", "开心收下", "收下", "开心领取",
+)
+# 只有「屏上有明显弹窗文案」时，才允许点不在底部居中位置的 X（如右上角 X），
+# 避免把任务列表里商品卡片上的小叉误当弹窗关闭键。
+POPUP_HINT_WORDS = (
+    "礼包", "首充", "一键领取", "点击继续", "恭喜", "红包", "签到成功",
+    "限时", "专属福利", "活动规则", "马上开启", "开心收下", "再领",
+)
+MAX_POPUP_DISMISS = 3   # 连续点同一个关闭键仍无效就停手，避免空转
+_popup_clicks = {"pos": None, "count": 0, "at": 0.0}
+
 # ── 快速档：把散落的固定等待集中管理 ──────────────────
 # 实测整轮慢的主因不是 OCR 单次耗时（约 1s，缩小截图并不能更快且会丢字），
 # 而是「每个动作后无脑等 1~2 秒」+「返回列表时逐层按返回、每层都重扫」
@@ -317,8 +336,57 @@ def read_page(force=False):
 
 
 def dismiss_notice(nodes):
-    return click_unique(nodes, ("我知道了", "稍后再说", "暂不", "关闭弹窗",
-                                "开心收下", "收下", "开心领取"))
+    """关掉盖在金币任务列表上的弹窗/浮层，优先点「X」。
+
+    只点关闭类控件，绝不点「一键领取 / 去完成」这类会跳业务页的按钮；
+    「放弃进度」对话框一律交给 dismiss_leave_dialog 选「留在页面」，
+    这里的 X 有可能是「确认离开」，绝不碰。
+    """
+    if not nodes:
+        return False
+    if any(any(w in normalize(n["text"]) for w in LEAVE_ABANDON_TEXTS)
+           for n in nodes):
+        return False
+
+    W, H = max(screen_width, 1), max(screen_height, 1)
+    xs = [n for n in nodes if normalize(n["text"]) in POPUP_X_TEXTS]
+    if xs:
+        def ratio(n):
+            return n["cx"] / W, n["cy"] / H
+        # 弹窗底部居中的关闭 X（最常见，本次真机就是这个位置）
+        bottom = [n for n in xs
+                  if .28 <= ratio(n)[0] <= .72 and ratio(n)[1] >= .55]
+        candidates = bottom
+        if not candidates:
+            evidence = any(any(w in normalize(n["text"]) for w in POPUP_HINT_WORDS)
+                           for n in nodes)
+            if evidence:
+                top_right = [n for n in xs
+                             if ratio(n)[0] >= .78 and ratio(n)[1] <= .32]
+                candidates = top_right or xs
+        if candidates:
+            target = max(candidates,
+                         key=lambda n: (n["cy"], -abs(n["cx"] - W // 2)))
+            # 同一个位置连点 3 次还没关掉，说明不是有效关闭键，别再空转
+            pos = (target["cx"] // 20, target["cy"] // 20)
+            now = time.monotonic()
+            if _popup_clicks["pos"] == pos and now - _popup_clicks["at"] < 8:
+                _popup_clicks["count"] += 1
+            else:
+                _popup_clicks["pos"], _popup_clicks["count"] = pos, 1
+            _popup_clicks["at"] = now
+            if _popup_clicks["count"] > MAX_POPUP_DISMISS:
+                return False
+            if click_node(target):
+                print(f"  ✖ 已点【{normalize(target['text'])}】关闭弹窗"
+                      f"（x={target['cx']}, y={target['cy']}）")
+                return True
+
+    # 没有 X（或 X 不在弹窗位置）时，退回明确的文字关闭按钮
+    if click_unique(nodes, POPUP_CLOSE_TEXTS):
+        print("  ✖ 已关闭弹窗（跳过/关闭类按钮）")
+        return True
+    return False
 
 
 def dismiss_leave_dialog(nodes):
@@ -1021,6 +1089,7 @@ def run_tasks(max_tasks=30):
     last_coins = None
     recover_fail = 0       # 连续恢复失败次数
     claim_streak = 0       # 连续领取累计奖励次数，防止一直卡在领取
+    popup_streak = 0       # 连续关闭弹窗次数，防止点了没效果时空转
     sweep_empty = 0        # 连续「完整遍历都没有任务」的轮数
     still_screens = 0      # 连续读到相同文字块的屏数（到底判定）
     last_signature = None
@@ -1039,6 +1108,15 @@ def run_tasks(max_tasks=30):
 
     while total < max_tasks:
         nodes = read_page()
+        # 弹窗会整屏盖住任务列表：每轮扫描前先关掉再解析，否则读到的全是
+        # 弹窗文案，每屏都判「可执行 0 个任务」并一路空转到底。
+        if popup_streak < MAX_POPUP_DISMISS and dismiss_notice(nodes):
+            popup_streak += 1
+            if popup_streak == MAX_POPUP_DISMISS:
+                print("  [提示] 已连续关闭 3 次弹窗，先按正常流程继续扫描")
+            invalidate_scan()
+            time.sleep(SETTLE_PAGE)
+            continue
         if not is_task_page(nodes):
             # 这里的金币任务列表会自己退回淘金币活动主页（实测约 4 秒后），
             # 所以不能只是等待：发现退回就重新点一次「去赚金币」再进。
@@ -1193,6 +1271,7 @@ def run_tasks(max_tasks=30):
         still_screens = 0
         last_signature = None
         sweep_empty = 0
+        popup_streak = 0     # 能正常解析到任务了，关闭计数归零
         task = tasks[0]
         key = task_key(task)
         # 浏览/观看类任务：要求的真实时长超过上限就直接跳过，不进入、不截断。

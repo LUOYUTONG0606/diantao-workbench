@@ -1114,11 +1114,19 @@ COMPLETION_HINTS = (
 )
 # 「已得 N 金币」这类带金额的到账文案：只在任务真正结算后出现。
 # 引导文案写的是「可得 / 最高得 / 浏览15秒得」，不含「已」，不会误命中。
+# 使用者 2026-11-07：真机结算浮层**有时不写「淘金币」三个字**，只写
+# 「已得30」或「下单再得100」，这两种同样是到账信号，看到就立即收工。
+# (?!\d) 阻止数字回溯，(?![/／%％天次秒分钟小时件单]) 挡住「已得1/3」
+# 这类进度 / 统计文案，避免把没做完的任务误判成已完成。
 STRONG_DONE_RE = re.compile(
     r"(?:已得|已获得|已领取|已到账|已领到)\s*\d+\s*(?:个)?(?:淘)?金币"
     r"|(?:淘)?金币已(?:到账|入账|领取)"
     r"|已得(?:淘)?金币"
+    r"|(?:已得|已获得|已领取|已到账|已领到)\s*\d{1,5}(?!\d)(?![/／%％天次秒分钟小时件单])"
+    r"|下单再得\s*\d{1,5}(?!\d)(?![/／%％天次秒分钟小时件单])"
 )
+# 「下单再得N」命中负向词「再得」，但它就是结算浮层的固定伴随文案，必须放行。
+SETTLEMENT_OVERRIDE_RE = re.compile(r"^下单再得\s*\d{1,5}(?!\d)")
 # 命中即否决：规则 / 引导 / 商品文案 / 常驻统计，都不是本次完成提示。
 COMPLETION_NEGATIVE = (
     "完成任务得", "完成任务可", "完成任务后", "完成任务即", "完成任务领",
@@ -1131,7 +1139,7 @@ COMPLETION_NEGATIVE = (
 
 
 def is_strong_completion(text):
-    """是否「已得 N 金币」这类带金额的结算文案（页面只在做完后显示）。"""
+    """是否「已得N / 下单再得N」这类带金额的结算文案（页面只在做完后显示）。"""
     return bool(STRONG_DONE_RE.search(re.sub(r"\s+", "", str(text or ""))))
 
 
@@ -1154,7 +1162,8 @@ def page_shows_completion(nodes, exclude=None):
         short.append(t)
         if len(t) > 24 or (exclude and t in exclude):
             continue
-        if any(w in t for w in COMPLETION_NEGATIVE):
+        if (any(w in t for w in COMPLETION_NEGATIVE)
+                and not SETTLEMENT_OVERRIDE_RE.search(t)):
             continue
         # 「已完成 1/3」「已领取 1/2」是进度不是完成，只有做满才算。
         m = re.search(r"(\d+)\s*/\s*(\d+)", t)
@@ -1175,8 +1184,10 @@ def page_shows_completion(nodes, exclude=None):
 
 
 def page_shows_coin_settlement(nodes, exclude=None):
-    """只认「已得N淘金币」这类金币到账的强结算信号。
+    """只认「已得N / 下单再得N」这类金币到账的强结算信号。
 
+    数字后面有没有「淘金币」三个字都认（真机浮层两种都出现过）；「下单再得N」
+    含「再得」但属于结算浮层伴随文案，由 SETTLEMENT_OVERRIDE_RE 放行。
     与 page_shows_completion 的区别：只认带金额 / 到账的结算文案（长度放宽到
     40 字，结算浮层常带一句说明），不受泛化「已完成」文案影响。看到它即代表
     金币已经到账，可以立刻收工，不需要再等待任何保险时间。
@@ -1192,7 +1203,8 @@ def page_shows_coin_settlement(nodes, exclude=None):
     for t in short:
         if len(t) > 40 or (exclude and t in exclude):
             continue
-        if any(w in t for w in COMPLETION_NEGATIVE):
+        if (any(w in t for w in COMPLETION_NEGATIVE)
+                and not SETTLEMENT_OVERRIDE_RE.search(t)):
             continue
         if STRONG_DONE_RE.search(t):
             return t
@@ -1282,7 +1294,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120,
     # 也封顶，避免别的任务又拖出 10s 保险时间）。旧版对 <=30s 任务硬写 4s、
     # 其余用默认 5s，使用者已明确「兜底 2s 就够了」。
     effective_extra = min(max(extra_seconds, 0), FALLBACK_GRACE_SECONDS)
-    print(f"  ⏱️ 看到【已得N淘金币】立即收工；仅无结算信号时兜底 {effective_extra}s")
+    print(f"  ⏱️ 看到【已得N / 下单再得N】立即收工；仅无结算信号时兜底 {effective_extra}s")
 
     # 立即下滑一次，不等页面扫描
     swipe_x = int(sw * 0.5)
@@ -1318,7 +1330,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120,
             sliding_min_seconds = max(min_duration, detected_sec)
             fallback_deadline = sliding_min_seconds + effective_extra
             print(f"  📋 检测到【{text}】，任务要求 {sliding_min_seconds}s"
-                  f"（看到【已得N淘金币】立即收工，不追加保险时间）")
+                  f"（看到【已得N / 下单再得N】立即收工，不追加保险时间）")
             break
     
     if has_sliding_text:
@@ -1424,7 +1436,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120,
         browse_start = time.time()
         reached = False
         print(f"  📋 未检测到滑动字样，任务要求 {fixed_duration}s；"
-              f"看到【已得N淘金币】立即收工，仅无结算信号时兜底 {effective_extra}s...")
+              f"看到【已得N / 下单再得N】立即收工，仅无结算信号时兜底 {effective_extra}s...")
         while time.time() - start < max_wait:
             now = time.time()
             elapsed_f = now - browse_start

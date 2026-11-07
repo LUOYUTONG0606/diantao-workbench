@@ -6,11 +6,13 @@ import re
 import sys
 import time
 import unicodedata
+from pathlib import Path
 
 from task_exclusions import is_blocked_boutique_task
 from u2_scanner import (
     execute_browse_task, execute_live_task, execute_video_task,
     is_blacklisted, scan_page,
+    external_link_dialog, external_link_blocked_count,
 )
 from utils import TB_APP, _cloud_ocr, connect_device, ensure_local_ocr
 from utils import pause_global_watcher
@@ -57,6 +59,14 @@ _last_expand = {"pos": None, "at": 0.0}
 # 收工；没有倒计时的页面才按 30s 兜底，避免被强制退出导致进度不计入。
 # 注意：任务若真的跳到别的 App 会直接退回并跳过，不会在外部 App 里浏览。
 BROWSE_CAP = 30
+# ⛔ 绝不点会把手机带出淘宝 / 带进安装流程的按钮。
+# 真机 2026-11-07 出现「提示：下个页面不受我们控制…https://z.toutiao.com」
+# +【取消】【浏览器打开】；使用者明确：以后不要跳到外部链接。
+CLICK_FORBIDDEN_TEXTS = (
+    "浏览器打开", "用浏览器打开", "在浏览器打开", "打开链接", "打开外部链接",
+    "立即打开", "继续访问", "下载App", "安装App",
+)
+
 # ── 弹窗关闭（只在「点进任务之后」生效） ──────────────────
 # 真机实测：「充值大礼包 / 首充礼包」这类浮层给一个底部居中的「X」
 # （1260x2800 屏上 x=633, y=2111）和顶部「跳过」。
@@ -118,6 +128,32 @@ APP_HINT_TITLES = (
 # 本轮已确认「点了会跳到别的 App」的任务：直接跳过、不再重试。
 _external_skipped = set()
 
+# 「点进去会跳外部链接」的任务持久记录：这次点进去发现后，下次启动直接不做，
+# 不用再触发一次外链提示（使用者 2026-11-07「以后不要这样」）。
+EXTERNAL_LINK_TASKS_FILE = (Path(__file__).resolve().parent
+                            / ".runtime" / "external_link_tasks.txt")
+
+
+def load_external_link_tasks():
+    try:
+        if EXTERNAL_LINK_TASKS_FILE.is_file():
+            for line in EXTERNAL_LINK_TASKS_FILE.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    _external_skipped.add(line.strip())
+    except Exception:
+        pass
+
+
+def remember_external_link_task(key):
+    """记下这项会跳外链的任务，本轮与以后都不再点进去。"""
+    _external_skipped.add(key)
+    try:
+        EXTERNAL_LINK_TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with EXTERNAL_LINK_TASKS_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(key + "\n")
+    except Exception as exc:
+        print(f"  ⚠️ 记录外链任务失败：{exc}")
+
 # 仍然不做：用户点名不要的蚂蚁系 + 资金/账号风险 + 非浏览类。
 # 注意「支付」不能作为子串写在这里，否则「支付宝」的浏览任务会被误杀。
 HARD_SKIP_WORDS = (
@@ -126,6 +162,15 @@ HARD_SKIP_WORDS = (
     "邀请", "助力", "分享", "订阅", "去关注", "关注店铺", "关注主播", "关注领",
     "抽奖", "猜价格", "猜一猜", "猜谜", "答题", "课堂", "考试",
     "玩小游戏", "查看并完成", "消消乐", "斗地主", "拍立淘",
+)
+
+# 实测点进去就是淘宝外部链接引导页的任务（真机 2026-11-07：空白 WebView
+# 反复弹「下个页面不受我们控制…https://z.toutiao.com」+ 浏览器打开）。
+# 使用者明确「以后不要跳到外部链接」，所以这类任务直接不做，连点都不点。
+# 运行时新发现的外链任务会追加到 .runtime/external_link_tasks.txt，
+# 下次启动由 load_external_link_tasks() 自动跳过。
+KNOWN_EXTERNAL_LINK_TASKS = (
+    "头条极速版刷视频",
 )
 
 # 用户明确要求做的「趣味课堂」类答题每日任务：进入后随机选一个答案（见 quiz 处理）。
@@ -175,6 +220,9 @@ def match_task_type(task_name):
     if any(kw in task_name for kw in QUIZ_TASKS):
         return "quiz"
     if is_blocked_boutique_task(task_name):
+        return "skip"
+    # 已确认会跳到淘宝外部链接的任务：直接不做（连弹窗都不触发）。
+    if any(k in normalize(task_name) for k in KNOWN_EXTERNAL_LINK_TASKS):
         return "skip"
     # 用户点名不要的蚂蚁系、资金/账号风险、非浏览类：不做。
     if any(word in task_name for word in HARD_SKIP_WORDS):
@@ -262,6 +310,12 @@ def swipe(x1, y1, x2, y2, duration=.3):
 
 
 def click_node(node):
+    label = normalize(node.get("text", ""))
+    # 会跳到外部链接 / 下载别的 App 的按钮一律不点（使用者要求）。
+    # scan_page 里另有「外链提示自动点取消」的兜底，双保险。
+    if any(w in label for w in CLICK_FORBIDDEN_TEXTS):
+        print(f"  ⛔ 拒绝点击【{label}】：会跳到外部链接或安装应用")
+        return False
     cx, cy = int(node.get("cx", 0)), int(node.get("cy", 0))
     if not (0 < cx < screen_width and 0 < cy < screen_height):
         return False
@@ -371,6 +425,9 @@ def dismiss_notice(nodes):
     """
     if not nodes:
         return False
+    # 外部链接提示已由 scan_page 统一点【取消】，这里绝不碰它的任何按钮。
+    if external_link_dialog(nodes):
+        return False
     if any(any(w in normalize(n["text"]) for w in LEAVE_ABANDON_TEXTS)
            for n in nodes):
         return False
@@ -415,6 +472,9 @@ def dismiss_leave_dialog(nodes):
     留在页面，绝不点放弃。返回 True 表示拦下了一次放弃对话框（已选「留在本页」）。
     用子串匹配，兼容 OCR 读出的「放弃进度」「确认要离开吗」等变体。
     """
+    # 外部链接提示不是「放弃进度」框，不在这里点任何按钮（含「取消」）。
+    if external_link_dialog(nodes):
+        return False
     def _has(n, words):
         t = normalize(n["text"])
         return any(w in t for w in words)
@@ -752,6 +812,13 @@ def exec_task(task_def):
     # 只有真的关掉才多一次 OCR，没有弹窗时不增加耗时。
     _popup_clicks.update(pos=None, count=0, at=0.0)
     landed = read_page(force=True)
+    # 点进来就要跳外部链接（如 https://z.toutiao.com）：scan_page 已自动点
+    # 【取消】，这一项按用户要求不做，退回列表且本轮不再重试。
+    if external_link_dialog(landed):
+        print(f"  ⛔ 【{name}】会跳到外部链接，按要求不做（已点【取消】）")
+        remember_external_link_task(task_key(task_def))
+        invalidate_scan()
+        return False
     for _ in range(MAX_POPUP_DISMISS):
         if not dismiss_notice(landed):
             break
@@ -1218,6 +1285,8 @@ def recover_task_page():
 
 
 def run_tasks(max_tasks=30):
+    # 上次运行记下的「会跳外部链接」任务，这次启动直接不做。
+    load_external_link_tasks()
     attempts, finished = {}, set()
     confirmed_progress = {}
     total, confirmed, empty_times = 0, 0, 0
@@ -1421,10 +1490,18 @@ def run_tasks(max_tasks=30):
             start_coins = before_coins
         print(f"  [{total}] {task['name']} ({task['type']}, {task['seconds']}秒)")
         task_t0 = time.monotonic()
+        link_before = external_link_blocked_count()
         try:
             exec_task(task)
         except Exception as exc:
             print(f"  任务执行异常：{exc}")
+        # 执行过程中才弹出外链提示（视频/浏览下滑到站外链接）：已取消跳转，
+        # 这一项本轮不再做，也不重试，避免反复弹窗。
+        if external_link_blocked_count() > link_before:
+            print(f"  ⛔ 【{task['name']}】执行中要跳外部链接，已取消；以后不再做这一项")
+            remember_external_link_task(key)
+            finished.add(key)
+            invalidate_scan()
         if not back_to_task_page():
             recover_fail += 1
             print(f"  返回任务列表失败（第 {recover_fail}/{MAX_RECOVER_FAILURES} 次），"

@@ -268,9 +268,132 @@ def is_blacklisted(text):
 # ========================================================
 # 页面扫描（返回结构化数据）
 # ========================================================
+# ========================================================
+# 外部链接提示：一律不跳，只点「取消」
+# ========================================================
+# 真机 2026-11-07：淘宝 WebView 里点/滑到站外链接（例如
+# https://z.toutiao.com）会弹「提示：下个页面不受我们控制哦，使用时请
+# 注意安全…」+【取消】【浏览器打开】。使用者明确要求：以后不要跳到外部链接。
+# 旧版既不认这个弹窗也不点取消，页面被遮住，脚本会一直卡在
+# 「未能进入金币任务列表」，还有误点「浏览器打开」跳出淘宝的风险。
+EXTERNAL_LINK_HINT_TEXTS = (
+    "下个页面不受我们控制", "不受我们控制", "注意安全https", "注意安全http",
+    "即将打开外部链接", "第三方页面不受", "第三方网站", "即将离开淘宝",
+)
+EXTERNAL_LINK_ALLOW_TEXTS = (
+    "浏览器打开", "打开链接", "立即打开", "继续访问", "前往", "允许", "用浏览器打开",
+)
+EXTERNAL_LINK_CANCEL_TEXTS = ("取消", "留在此页", "留在淘宝", "暂不打开", "不了")
+_external_link_state = {"count": 0, "last_at": 0.0, "seen": False, "repeats": 0}
+
+
+def external_link_dialog(nodes):
+    """当前屏是否是「要跳到外部链接」的提示弹窗；是则返回命中的文案。"""
+    texts = [str(n.get("text", "")) for n in nodes or []]
+    for t in texts:
+        if any(k in t for k in EXTERNAL_LINK_HINT_TEXTS):
+            return t
+    # 说明文案没被 OCR 读全时，「浏览器打开 + 取消」同一行也视为外链确认框。
+    allows = [n for n in nodes or []
+              if any(k in str(n.get("text", "")) for k in EXTERNAL_LINK_ALLOW_TEXTS)]
+    cancels = [n for n in nodes or []
+               if str(n.get("text", "")).strip() in EXTERNAL_LINK_CANCEL_TEXTS]
+    if allows and cancels and any(
+            abs(int(a.get("cy", 0)) - int(c.get("cy", 0))) < 120
+            for a in allows for c in cancels):
+        return "浏览器打开"
+    return ""
+
+
+def external_link_blocked_count():
+    """累计拦下多少次外部链接跳转（供主循环判断刚做的那项是否该跳过）。"""
+    return _external_link_state["count"]
+
+
+def _note_external_link_cancel():
+    _external_link_state["count"] += 1
+
+
+def dismiss_external_link(device, nodes):
+    """看到外部链接提示就点【取消】，绝不点「浏览器打开 / 打开 / 允许」。"""
+    hint = external_link_dialog(nodes)
+    if not hint:
+        _external_link_state["seen"] = False
+        return False
+    now = time.monotonic()
+    if _external_link_state["seen"] and now - _external_link_state["last_at"] < 2.5:
+        return True   # 刚处理过，别重复点（同一弹窗 2.5s 内只点一次）
+    _external_link_state["seen"] = True
+    if now - _external_link_state["last_at"] < 10:
+        _external_link_state["repeats"] += 1
+    else:
+        _external_link_state["repeats"] = 1
+    _external_link_state["last_at"] = now
+    _note_external_link_cancel()
+    cancels = [n for n in nodes
+               if str(n.get("text", "")).strip() in EXTERNAL_LINK_CANCEL_TEXTS
+               and not any(k in str(n.get("text", ""))
+                           for k in EXTERNAL_LINK_ALLOW_TEXTS)]
+    handled = False
+    if cancels:
+        n = cancels[0]
+        try:
+            device.click(int(n["cx"]), int(n["cy"]))
+            print(f"  ⛔ 页面要跳到外部链接，已点【{str(n['text']).strip()}】取消，不跳转")
+            handled = True
+        except Exception as exc:
+            print(f"  ⚠️ 点【取消】失败：{exc}")
+    if not handled:
+        # 没有「取消」按钮也绝不点允许类按钮，按返回把提示关掉。
+        try:
+            device.press("back")
+            print("  ⛔ 页面要跳到外部链接，未找到【取消】，已按返回关闭提示")
+        except Exception as exc:
+            print(f"  ⚠️ 关闭外部链接提示失败：{exc}")
+    # 真机上有些页面（z.toutiao.com 引导页）会反复触发站外跳转，点完取消
+    # 过几秒又弹同一个框。连续拦到 3 次就按返回整个退出这个页面，别再停留。
+    if _external_link_state["repeats"] >= 3:
+        try:
+            device.press("back")
+            print("  ⛔ 外部链接提示反复出现，已按返回退出这个页面")
+        except Exception:
+            pass
+        _external_link_state["repeats"] = 0
+    return True
+
+
+def quick_external_link_cancel(device):
+    """不截图的轻量探测：供视频/滑动循环每轮调用，避免弹窗挂满整个任务时长。
+
+    原生 Dialog 能从控件树直接读到；WebView 内的 HTML 弹窗读不到也不报错，
+    由 scan_page 的 OCR 路径兜底。命中就点「取消」并提前结束本项。
+    """
+    try:
+        hint = device(textContains="不受我们控制")
+        if not hint.exists:
+            hint = device(textContains="注意安全https")
+        if not hint.exists:
+            return False
+        cancel = device(text="取消")
+        if cancel.exists:
+            cancel.click()
+            print("  ⛔ 检测到外部链接提示，已点【取消】，不跳转")
+        else:
+            device.press("back")
+            print("  ⛔ 检测到外部链接提示，已按返回关闭，不跳转")
+        _note_external_link_cancel()
+        return True
+    except Exception:
+        return False
+
+
 def scan_page(device):
     """使用 OCR 扫描页面文字与坐标，不读取应用 WebView 的 U2 控件树。"""
-    return _ocr_nodes(device)
+    nodes = _ocr_nodes(device)
+    # 统一的外部链接拦截点：主脚本 read_page、浏览/视频循环、返回导航都会经过，
+    # 弹窗一出现就被取消，绝不会点「浏览器打开」。返回原 nodes 供上层判断。
+    dismiss_external_link(device, nodes)
+    return nodes
 
 
 def _ocr_nodes(device):
@@ -1058,8 +1181,20 @@ def _execute_video_task(
     start = time.time()
     swipe_index = 0
     next_swipe_at = 0.0
+    link_marker = external_link_blocked_count()
+    last_link_check = 0.0
 
     while completed:
+        # 外链提示会在下滑过程中弹出：每 5s 轻量探测一次（不截图），
+        # 出现就点「取消」并提前结束本项，绝不跳到外部链接。
+        now_link_check = time.time()
+        if now_link_check - last_link_check >= 5.0:
+            last_link_check = now_link_check
+            quick_external_link_cancel(device)
+            if external_link_blocked_count() > link_marker:
+                print("  ⛔ 本项会跳到外部链接，已取消跳转并提前结束")
+                completed = False
+                break
         elapsed = time.time() - start
         if swipe_index >= target_swipes and elapsed >= effective_duration:
             print(f"  ⏰ 视频调度完成 ({effective_duration:.1f}s)")
@@ -1284,6 +1419,7 @@ def execute_browse_task(device, min_duration=0, max_wait=120,
     sw, sh = device.window_size()
     swipe_count = 0
     start = time.time()
+    link_marker = external_link_blocked_count()
 
     # ── 「保险时间」只在始终没看到结算信号时兜底 ──
     # 实测任务做完页面会显示「已得30淘金币」，即金币已到账的强信号。看到就
@@ -1342,6 +1478,9 @@ def execute_browse_task(device, min_duration=0, max_wait=120,
             elapsed = int(time.time() - browse_start)
             
             nodes = scan_page(device)
+            if external_link_blocked_count() > link_marker:
+                print("  ⛔ 页面要跳到外部链接，已取消跳转，本项提前结束")
+                return False
             found_sliding = False
             remaining = -1
             for n in nodes:
@@ -1438,6 +1577,12 @@ def execute_browse_task(device, min_duration=0, max_wait=120,
         print(f"  📋 未检测到滑动字样，任务要求 {fixed_duration}s；"
               f"看到【已得N / 下单再得N】立即收工，仅无结算信号时兜底 {effective_extra}s...")
         while time.time() - start < max_wait:
+            # 滑动过程中也可能弹出外部链接提示：轻量探测（不截图）+ 计数检查。
+            if swipe_count and swipe_count % 8 == 0:
+                quick_external_link_cancel(device)
+            if external_link_blocked_count() > link_marker:
+                print("  ⛔ 页面要跳到外部链接，已取消跳转，本项提前结束")
+                return False
             now = time.time()
             elapsed_f = now - browse_start
             if elapsed_f >= fixed_duration:
